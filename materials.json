@@ -1,0 +1,298 @@
+[
+  {
+    "name": "标准流体",
+    "color": [
+      100,
+      150,
+      255,
+      255
+    ],
+    "color2": null,
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.4,
+    "link_angle_strength": 5.0,
+    "melt_temp": 600.0,
+    "boil_temp": null,
+    "is_soft": null,
+    "is_noisy": null
+  },
+  {
+    "name": "凝固岩石",
+    "color": [
+      150,
+      150,
+      150,
+      255
+    ],
+    "color2": null,
+    "mass": 1.5,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.6,
+    "link_angle_strength": 8.0,
+    "melt_temp": 1200.0,
+    "boil_temp": null,
+    "is_soft": null,
+    "is_noisy": null
+  },
+  {
+    "name": "结构刚体",
+    "color": [
+      200,
+      200,
+      200,
+      255
+    ],
+    "color2": null,
+    "mass": 3.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 1.2,
+    "link_angle_strength": 20.0,
+    "melt_temp": 1800.0,
+    "boil_temp": null,
+    "is_soft": null,
+    "is_noisy": null
+  },
+  {
+    "name": "弹性橡胶",
+    "color": [
+      80,
+      80,
+      80,
+      255
+    ],
+    "color2": null,
+    "mass": 0.8,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 2.0,
+    "link_angle_strength": 50.0,
+    "melt_temp": 200.0,
+    "boil_temp": null,
+    "is_soft": null,
+    "is_noisy": null
+  },
+  {
+    "name": "叶岩",
+    "color": [
+      100,
+      100,
+      105,
+      255
+    ],
+    "color2": null,
+    "mass": 2.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.3,
+    "link_angle_strength": 4.0,
+    "melt_temp": 1400.0,
+    "boil_temp": null,
+    "is_soft": null,
+    "is_noisy": null
+  },
+  {
+    "name": "钴玻璃",
+    "color": [
+      200,
+      220,
+      255,
+      128
+    ],
+    "color2": null,
+    "mass": 0.8,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.1,
+    "link_angle_strength": 2.0,
+    "melt_temp": 700.0,
+    "boil_temp": null,
+    "is_soft": null,
+    "is_noisy": null
+  },
+  {
+    "name": "钨金属",
+    "color": [
+      12,
+      12,
+      12,
+      255
+    ],
+    "color2": null,
+    "mass": 10.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.3,
+    "link_angle_strength": 10.0,
+    "melt_temp": 3400.0,
+    "boil_temp": null,
+    "is_soft": null,
+    "is_noisy": null
+  },
+  {
+    "name": "硅胶",
+    "color": [
+      180,
+      204,
+      167,
+      255
+    ],
+    "color2": null,
+    "mass": 0.4,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.8,
+    "link_angle_strength": 90.0,
+    "melt_temp": 200.0,
+    "boil_temp": null,
+    "is_soft": null,
+    "is_noisy": null
+  },
+  {
+    "name": "QWW",
+    "color": [
+      0,
+      0,
+      0,
+      255
+    ],
+    "color2": [
+      52,
+      0,
+      0,
+      255
+    ],
+    "mass": 180.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 80.0,
+    "link_angle_strength": 30.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": true
+  },
+  {
+    "name": "QWW1244",
+    "color": [
+      93,
+      0,
+      0,
+      255
+    ],
+    "color2": [
+      186,
+      0,
+      0,
+      255
+    ],
+    "mass": 10000.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 2.0,
+    "link_angle_strength": 1.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": true
+  },
+  {
+    "name": "QWW1240000",
+    "color": [
+      186,
+      79,
+      0,
+      255
+    ],
+    "color2": [
+      118,
+      0,
+      0,
+      255
+    ],
+    "mass": 40.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.0,
+    "link_dist_strength": 80.0,
+    "link_angle_strength": 1.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": true
+  },
+  {
+    "name": "水",
+    "color": [
+      0,
+      76,
+      255,
+      255
+    ],
+    "color2": [
+      0,
+      140,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.0,
+    "link_dist_strength": 10.0,
+    "link_angle_strength": 80.0,
+    "melt_temp": 10.0,
+    "boil_temp": 100.0,
+    "is_soft": false,
+    "is_noisy": true
+  },
+  {
+    "name": "OOPP",
+    "color": [
+      218,
+      141,
+      255,
+      255
+    ],
+    "color2": [
+      229,
+      191,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.0,
+    "link_dist_strength": 0.02,
+    "link_angle_strength": 0.2,
+    "melt_temp": 300.0,
+    "boil_temp": 800.0,
+    "is_soft": false,
+    "is_noisy": true
+  },
+  {
+    "name": "QWW4244",
+    "color": [
+      55,
+      0,
+      0,
+      255
+    ],
+    "color2": [
+      21,
+      0,
+      0,
+      255
+    ],
+    "mass": 14000.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 0.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 2000.0,
+    "boil_temp": 3000.0,
+    "is_soft": false,
+    "is_noisy": true
+  }
+]
