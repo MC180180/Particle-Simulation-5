@@ -20,6 +20,10 @@ struct MaterialProps {
     boil_temp: f32,
     flags: u32,
     surface_tension: f32,
+    light_transmission: f32,
+    light_reflectivity: f32,
+    refractive_index: f32,
+    _pad1: f32,
     _pad2: f32,
 }
 
@@ -52,6 +56,10 @@ struct SimParams {
     is_paused_flag: u32,
     num_gravity_sources: u32,
     allow_surface_tension: u32,
+    photon_substeps: u32,
+    _pad_a: u32,
+    _pad_b: u32,
+    _pad_c: u32,
     gravity_sources: array<vec4<f32>, 8>,
     materials: array<MaterialProps, 16>,
 }
@@ -64,6 +72,21 @@ const GRID_H: u32 = 1024u;
 @group(0) @binding(2) var<uniform> params: SimParams;
 @group(0) @binding(3) var<storage, read_write> particle_next: array<i32>;
 @group(0) @binding(4) var<storage, read_write> pos_residue: array<vec2<f32>>;
+
+struct Photon {
+    pos: vec2<f32>,
+    vel: vec2<f32>,
+    energy: f32,
+    lifetime: f32,
+    max_lifetime: f32,
+    speed: f32,
+    last_hit_id: i32,
+    path_idx: u32,
+    _pad: vec2<f32>,
+    path: array<vec2<f32>, 16>,
+}
+@group(0) @binding(5) var<storage, read_write> photons: array<Photon>;
+@group(0) @binding(6) var<storage, read_write> light_buf: array<atomic<i32>>;
 
 fn pos_to_cell(pos: vec2<f32>) -> vec2<i32> {
     let bound = params.scene_scale;
@@ -688,4 +711,182 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Render shader now handles color mapping; do not overwrite p.color here!
     particles[i] = p;
+
+    // Decay per-particle light energy (~1 second decay)
+    let cur_light = atomicLoad(&light_buf[i]);
+    if (cur_light > 0) {
+        // Exponential decay: multiply by 0.95 each frame at 60fps ≈ 1s to near zero
+        let decayed = i32(f32(cur_light) * pow(0.95, dt * 60.0));
+        atomicStore(&light_buf[i], max(0, decayed));
+    }
+}
+
+// ===== Photon Physics (uses the SAME grid as particle physics) =====
+fn photon_rand(seed: ptr<function, u32>) -> f32 {
+    var state = *seed;
+    state = (state ^ 61u) ^ (state >> 16u);
+    state = state * 9u;
+    state = state ^ (state >> 4u);
+    state = state * 668265261u;
+    state = state ^ (state >> 15u);
+    *seed = state;
+    return f32(state) / 4294967296.0;
+}
+
+@compute @workgroup_size(64)
+fn compute_photon_physics(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let i = global_id.x;
+    let max_photons = arrayLength(&photons);
+    if (i >= max_photons) { return; }
+
+    var ph = photons[i];
+    
+    // If it's a fading ghost
+    if (ph.lifetime <= 0.0) {
+        if (ph.lifetime > -0.2) {
+            ph.lifetime -= params.dt;
+        } else {
+            ph.energy = 0.0;
+        }
+        photons[i] = ph;
+        return;
+    }
+    
+    if (ph.energy < 0.00001) { return; }
+
+    let full_dt = params.dt;
+    let n_sub = max(1u, params.photon_substeps);
+    let sub_dt = full_dt / f32(n_sub);
+    var seed = u32(ph.pos.x * 12345.0) ^ u32(ph.pos.y * 67890.0) ^ i ^ u32(full_dt * 999999.0);
+
+    // Record the start of this frame if not bouncing immediately
+    // Wait, we record at the start of each substep instead.
+
+    for (var s: u32 = 0u; s < n_sub; s++) {
+        if (ph.energy < 0.00001) { break; }
+
+        // Record path point
+        let old_pos = ph.pos;
+        ph.path[ph.path_idx % 16u] = old_pos;
+        ph.path_idx += 1u;
+        
+        let step_dist = ph.speed * sub_dt;
+        let move_vec = ph.vel * step_dist;
+        ph.pos += move_vec;
+
+        // Use the SAME pos_to_cell as particle physics
+        if (params.active_count > 0u) {
+            let cell = pos_to_cell((old_pos + ph.pos) * 0.5);
+            let move_len = length(move_vec);
+            let bound = params.scene_scale;
+            let bound2 = bound * 2.0;
+            let grid_cell_size = bound2 / f32(GRID_W);
+            let extra = i32(ceil(move_len / grid_cell_size)) + 1;
+            let sr = min(extra, 4);
+
+            var hit_idx: i32 = -1;
+            var hit_t: f32 = 10000.0;
+
+            for (var dy: i32 = -sr; dy <= sr; dy++) {
+                for (var dx: i32 = -sr; dx <= sr; dx++) {
+                    let nx = cell.x + dx;
+                    let ny = cell.y + dy;
+                    if (nx < 0 || nx >= i32(GRID_W) || ny < 0 || ny >= i32(GRID_H)) { continue; }
+
+                    var ci = atomicLoad(&grid[u32(ny) * GRID_W + u32(nx)]);
+                    var chain = 0;
+                    while (ci != -1 && chain < 32) {
+                        chain++;
+                        // Skip the particle we hit last time (prevent double-hit)
+                        if (u32(ci) < params.active_count && ci != ph.last_hit_id) {
+                            let other = particles[u32(ci)];
+                            let m = params.materials[other.mat_type & 0xFFu];
+                            let pr = 0.0112 * m.conn_dist * 0.5;
+
+                            // Ray-segment vs circle intersection
+                            let ray_len_sq = dot(move_vec, move_vec);
+                            var t = 0.5;
+                            if (ray_len_sq > 0.00001) {
+                                t = clamp(dot(other.pos - old_pos, move_vec) / ray_len_sq, 0.0, 1.0);
+                            }
+                            let closest = old_pos + move_vec * t;
+                            let diff = closest - other.pos;
+                            let dist_sq = dot(diff, diff);
+
+                            if (dist_sq < pr * pr && t < hit_t) {
+                                hit_t = t;
+                                hit_idx = ci;
+                            }
+                        }
+                        ci = particle_next[ci];
+                    }
+                }
+            }
+
+            if (hit_idx != -1) {
+                let hit_p = particles[u32(hit_idx)];
+                let m = params.materials[hit_p.mat_type & 0xFFu];
+                let hit_pos = old_pos + move_vec * hit_t;
+                let diff_to_center = hit_pos - hit_p.pos;
+                let diff_len = length(diff_to_center);
+                var normal = vec2<f32>(0.0, 1.0);
+                if (diff_len > 0.0001) {
+                    normal = diff_to_center / diff_len;
+                }
+
+                // Record this hit to prevent re-interaction next substep
+                ph.last_hit_id = hit_idx;
+
+                // Step 1: Transmission check (probability of passing through)
+                if (photon_rand(&seed) < m.light_transmission) {
+                    let eta = 1.0 / max(1.0, m.refractive_index);
+                    let refracted = refract(ph.vel, normal, eta);
+                    if (length(refracted) > 0.001) {
+                        ph.vel = normalize(refracted);
+                    }
+                    ph.pos = hit_pos - normal * grid_cell_size * 0.3;
+                    ph.path[ph.path_idx % 16u] = ph.pos; // Record bend
+                    ph.path_idx += 1u;
+                }
+                // Step 2: Reflection check (probabilistic)
+                else if (photon_rand(&seed) < m.light_reflectivity) {
+                    ph.vel = reflect(ph.vel, normal);
+                    ph.pos = hit_pos + normal * grid_cell_size * 0.3;
+                    ph.path[ph.path_idx % 16u] = ph.pos; // Record bounce
+                    ph.path_idx += 1u;
+                    let energy_lost = ph.energy * 0.05;
+                    ph.energy -= energy_lost;
+                    particles[u32(hit_idx)].temperature += energy_lost * 100.0;
+                    atomicAdd(&light_buf[u32(hit_idx)], i32(energy_lost * 10000.0));
+                }
+                // Step 3: Absorption
+                else {
+                    let energy_lost = ph.energy;
+                    ph.pos = hit_pos;
+                    particles[u32(hit_idx)].temperature += energy_lost * 100.0;
+                    atomicAdd(&light_buf[u32(hit_idx)], i32(energy_lost * 10000.0));
+                    
+                    // Mark as ghost for fading out over 0.2s (don't clear energy yet)
+                    ph.lifetime = 0.0; 
+                    break;
+                }
+            } else {
+                // No hit this substep, clear last_hit_id
+                ph.last_hit_id = -1;
+            }
+        }
+    } // end substep loop
+
+    // Lifetime decay (once per frame, using full dt)
+    ph.lifetime -= full_dt;
+    if (ph.lifetime <= ph.max_lifetime * 0.01 && ph.lifetime > 0.0) {
+        let fade = ph.lifetime / max(ph.max_lifetime * 0.01, 0.0001);
+        ph.energy *= max(0.0, fade);
+    }
+    if (ph.energy < 0.00001 && ph.lifetime > 0.0) {
+        ph.lifetime = 0.0;
+        ph.energy = 0.0;
+    }
+
+    photons[i] = ph;
 }

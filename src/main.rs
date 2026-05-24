@@ -25,6 +25,21 @@ enum ComputeMode {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
+struct Photon {
+    pos: [f32; 2],
+    vel: [f32; 2],
+    energy: f32,
+    lifetime: f32,
+    max_lifetime: f32,
+    speed: f32,
+    last_hit_id: i32,
+    path_idx: u32,
+    _pad: [f32; 2],
+    path: [[f32; 2]; 16],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 struct Particle {
     pos: [f32; 2],
     vel: [f32; 2],
@@ -75,6 +90,12 @@ pub struct MaterialDef {
     pub is_noisy: Option<bool>,
     #[serde(default)]
     pub surface_tension: Option<f32>,
+    #[serde(default)]
+    pub light_transmission: Option<f32>, // 光透射 (0-1)
+    #[serde(default)]
+    pub light_reflectivity: Option<f32>, // 光反射率 (0-1)
+    #[serde(default)]
+    pub refractive_index: Option<f32>, // 光折射率 (0-100)
 }
 
 #[repr(C)]
@@ -89,6 +110,10 @@ pub struct MaterialPropsWGSL {
     pub boil_temp: f32,
     pub flags: u32,
     pub surface_tension: f32,
+    pub light_transmission: f32,
+    pub light_reflectivity: f32,
+    pub refractive_index: f32,
+    pub _pad1: f32,
     pub _pad2: f32,
 }
 
@@ -155,9 +180,9 @@ enum LeftClickMode {
 
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 enum WorldSourceType {
-    Light { color: [f32; 3], intensity: f32 },
+    Light { rate_per_sec: f32, delay_accum: f32, angle: f32, speed: f32, energy: f32, lifetime: f32 },
     Particle { mat: u32, node_mode: SpawnNodeMode, rate_per_sec: f32, delay_accum: f32, angle: f32, speed: f32 },
-    Gravity { force: f32 }, // 姝ｄ唬琛ㄥ惛寮曪紝璐熶唬琛ㄦ帓鏂?
+    Gravity { force: f32 }, // 正代表吸引，负代表排斥
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -274,6 +299,10 @@ struct SimParams {
     is_paused_flag: u32,
     num_gravity_sources: u32,
     allow_surface_tension: u32,
+    photon_substeps: u32,
+    _pad_a: u32,
+    _pad_b: u32,
+    _pad_c: u32,
     gravity_sources: [f32; 32], // [x, y, radius, force] * 8
     materials: [MaterialPropsWGSL; 16],
 }
@@ -612,7 +641,7 @@ async fn run() {
     let adapter_info = adapter.get_info();
     let gpu_name = adapter_info.name.clone();
     let gpu_backend = format!("{:?}", adapter_info.backend);
-    let gpu_driver = adapter_info.driver.clone();
+    let _gpu_driver = adapter_info.driver.clone();
 
     // ===== 根据显卡 buffer 限制动态计算最大粒子数 =====
     let device_limits = device.limits();
@@ -620,10 +649,10 @@ async fn run() {
     let particle_byte_size = std::mem::size_of::<Particle>() as u64;
     let gpu_max_particles = (max_buf / particle_byte_size) as u32;
     // 取期望值和硬件上限的较小值，保证不会超出显卡限制
-    let mut NUM_PARTICLES: u32 = DESIRED_PARTICLES.min(gpu_max_particles);
+    let mut num_particles: u32 = DESIRED_PARTICLES.min(gpu_max_particles);
     // CPU 模式粒子上限 64K
     if compute_mode == ComputeMode::Cpu {
-        NUM_PARTICLES = NUM_PARTICLES.min(65536);
+        num_particles = num_particles.min(65536);
     }
 
     // 从 Windows 注册表读取真实显存大小，按 GPU 名称匹配（避免读到核显）
@@ -655,7 +684,7 @@ async fn run() {
         format!("{} MB (缓冲区)", max_buf / 1024 / 1024)
     };
     println!("GPU VRAM = {} bytes, max_storage_buffer_binding_size = {} bytes", vram_bytes, max_buf);
-    println!("实际粒子上限: {} (期望: {}, 硬件上限: {})", NUM_PARTICLES, DESIRED_PARTICLES, gpu_max_particles);
+    println!("实际粒子上限: {} (期望: {}, 硬件上限: {})", num_particles, DESIRED_PARTICLES, gpu_max_particles);
 
     let size = window.inner_size();
     let caps = surface.get_capabilities(&adapter);
@@ -712,7 +741,7 @@ async fn run() {
     let mut egui_renderer = Renderer::new(&device, config.format, None, 1);
 
     // ===== 粒子数据 =====
-    let init_particles: Vec<Particle> = (0..NUM_PARTICLES)
+    let init_particles: Vec<Particle> = (0..num_particles)
         .map(|_| Particle {
             pos: [10000.0, 10000.0],
             vel: [0.0, 0.0],
@@ -728,13 +757,13 @@ async fn run() {
 
     let particle_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("particle_buf"),
-        size: (NUM_PARTICLES as u64) * (std::mem::size_of::<Particle>() as u64),
+        size: (num_particles as u64) * (std::mem::size_of::<Particle>() as u64),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
     let particle_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("particle_staging_buf"),
-        size: ((NUM_PARTICLES.max(1)) as u64) * (std::mem::size_of::<Particle>() as u64),
+        size: ((num_particles.max(1)) as u64) * (std::mem::size_of::<Particle>() as u64),
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -748,17 +777,34 @@ async fn run() {
     });
     let particle_next_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("particle_next"),
-        size: (NUM_PARTICLES as u64) * 4,
+        size: (num_particles as u64) * 4,
         usage: wgpu::BufferUsages::STORAGE,
         mapped_at_creation: false,
     });
     let pos_residue_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("pos_residue"),
-        size: (NUM_PARTICLES as u64) * 8, // vec2<f32> error accumulator
+        size: (num_particles as u64) * 8, // vec2<f32> error accumulator
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
+    const MAX_PHOTONS: u32 = 200_000;
+    let photon_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("photon_buf"),
+        size: (MAX_PHOTONS as u64) * (std::mem::size_of::<Photon>() as u64),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    // Zero-initialize photon buffer to prevent GPU from reading garbage data
+    queue.write_buffer(&photon_buf, 0, &vec![0u8; MAX_PHOTONS as usize * std::mem::size_of::<Photon>()]);
+
+    // Per-particle light energy buffer (atomic i32, fixed-point: value/10000 = energy)
+    let light_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("light_buf"),
+        size: (num_particles as u64) * 4,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
     // ===== 相机 =====
     let mut camera = Camera {
         offset: [0.0, 0.0],
@@ -786,7 +832,7 @@ async fn run() {
     });
 
     // ===== Compute Pipelines (GPU only) =====
-    let (compute_bg, pipeline_clear, pipeline_populate, pipeline_physics, grid_workgroups) = if compute_mode == ComputeMode::Gpu {
+    let (compute_bg, pipeline_clear, pipeline_populate, pipeline_physics, grid_workgroups, p_photons) = if compute_mode == ComputeMode::Gpu {
         let cs = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compute"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader_compute.wgsl").into()),
@@ -799,6 +845,8 @@ async fn run() {
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -809,6 +857,8 @@ async fn run() {
                 wgpu::BindGroupEntry { binding: 2, resource: sim_params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: particle_next_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: pos_residue_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: photon_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: light_buf.as_entire_binding() },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -817,15 +867,17 @@ async fn run() {
         let p_clear = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("clear_grid"), layout: Some(&layout), module: &cs, entry_point: "clear_grid" });
         let p_pop = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("populate_grid"), layout: Some(&layout), module: &cs, entry_point: "populate_grid" });
         let p_phys = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("compute_physics"), layout: Some(&layout), module: &cs, entry_point: "compute_physics" });
+        let p_photons = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("compute_photon_physics"), layout: Some(&layout), module: &cs, entry_point: "compute_photon_physics" });
+        
         let gwg = (GRID_W * GRID_H + 63) / 64;
-        (Some(bg), Some(p_clear), Some(p_pop), Some(p_phys), gwg)
+        (Some(bg), Some(p_clear), Some(p_pop), Some(p_phys), gwg, Some(p_photons))
     } else {
-        (None, None, None, None, 0)
+        (None, None, None, None, 0, None)
     };
 
     // CPU 物理引擎 (仅 CPU 模式)
     let mut cpu_physics_engine = if compute_mode == ComputeMode::Cpu {
-        Some(cpu_physics::CpuPhysics::new(NUM_PARTICLES))
+        Some(cpu_physics::CpuPhysics::new(num_particles))
     } else {
         None
     };
@@ -878,6 +930,16 @@ async fn run() {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let render_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -895,6 +957,10 @@ async fn run() {
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: sim_params_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: light_buf.as_entire_binding(),
             },
         ],
     });
@@ -917,7 +983,7 @@ async fn run() {
             entry_point: "fs_main",
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -953,7 +1019,7 @@ async fn run() {
                 entry_point: "fs_link_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -969,6 +1035,44 @@ async fn run() {
             },
             multiview: None,
         }))
+    } else {
+        None
+    };
+
+    let render_photons_pipeline = if compute_mode == ComputeMode::Gpu {
+        let rs_photons = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("render_photons"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader_render_photons.wgsl").into()),
+        });
+        let render_photons_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let render_photons_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &render_photons_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: photon_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: camera_buf.as_entire_binding() },
+            ],
+        });
+        Some((render_photons_bg, device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("render_photons"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None, bind_group_layouts: &[&render_photons_bgl], push_constant_ranges: &[],
+            })),
+            vertex: wgpu::VertexState { module: &rs_photons, entry_point: "vs_main", buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &rs_photons, entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::LineList, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState { count: 4, mask: !0, alpha_to_coverage_enabled: false },
+            multiview: None,
+        })))
     } else {
         None
     };
@@ -999,6 +1103,8 @@ async fn run() {
     let mut last_cursor: Option<[f64; 2]> = None;
 
     let mut active_particles: u32 = 0; // 璧锋棤绮?
+    let mut active_photons: u32 = 0;
+    let mut photon_head: u32 = 0;
     let mut left_click_mode = LeftClickMode::DragForce;
     let mut active_tool_category: usize = 0;
     let mut spawn_prelinked = true;
@@ -1022,6 +1128,7 @@ async fn run() {
     let mut current_fps = 0.0f32;
     let mut last_fps_update = std::time::Instant::now();
     let mut substeps: u32 = 32;
+    let mut photon_substeps: u32 = 8;
     let dt_steps: [f32; 9] = [0.01, 0.05, 0.1, 0.2, 0.4, 0.5, 1.0, 2.0, 4.0];
     let mut dt_scale_idx: usize = 6; // 榛樿 1.0x
     let mut damping_percent: f32 = 3.0; // 默每损失 3% 动能
@@ -1083,6 +1190,9 @@ async fn run() {
     let mut new_material_melt = 1000.0f32;
     let mut new_material_boil = 2000.0f32;
     let mut new_material_surface_tension = 0.0f32;
+    let mut new_material_light_transmission = 0.0f32;
+    let mut new_material_light_reflectivity = 0.0f32;
+    let mut new_material_refractive_index = 1.0f32;
 
     let mut selected_source_type = 1; // 0=鍏? 1=粒子, 2=引力
     let mut selected_edit_source_id: Option<u32> = None;
@@ -1093,6 +1203,11 @@ async fn run() {
     let mut source_speed = 0.5;
     let mut source_angle = 90.0;
     let mut source_force = 0.001; // 寮曞姏婧愰粯璁ゅ己搴?
+    let mut source_light_rate = 500.0f32;
+    let mut source_light_angle = 360.0f32;
+    let mut source_light_speed = 5.0f32;
+    let mut source_light_energy = 1.0f32;
+    let mut source_light_lifetime = 2.0f32;
     let mut holding_source_id: Option<u32> = None;
     let mut trigger_clear_non_fixed = false;
 
@@ -1128,7 +1243,7 @@ async fn run() {
     let mut splash_active = true;
     let mut splash_fade_start: Option<std::time::Instant> = None;
     let splash_fade_duration = 1.0f32; // 渐出时长 1 秒
-    let mut particle_capacity: u32 = NUM_PARTICLES; // 用户选择的粒子容量上限
+    let mut particle_capacity: u32 = num_particles; // 用户选择的粒子容量上限
 
     // 粒子容量预设块定义: (粒子数, 标签, 方块边长, 颜色RGB)
     let presets: [(u32, &str, f32, [u8; 3]); 9] = [
@@ -1257,7 +1372,7 @@ async fn run() {
                                 } else {
                                     // 放置新源
                                     let ty = match selected_source_type {
-                                        0 => WorldSourceType::Light { color: [1.0, 1.0, 0.5], intensity: 1.0 },
+                                        0 => WorldSourceType::Light { rate_per_sec: source_light_rate, delay_accum: 0.0, angle: source_light_angle, speed: source_light_speed, energy: source_light_energy, lifetime: source_light_lifetime },
                                         1 => WorldSourceType::Particle { mat: source_particle_mat, node_mode: source_particle_node, rate_per_sec: source_rate, delay_accum: 0.0, speed: source_speed, angle: source_angle },
                                         _ => WorldSourceType::Gravity { force: source_force },
                                     };
@@ -1455,12 +1570,12 @@ async fn run() {
 
                                     // 粒子上限
                                     y += 20.0;
-                                    let particles_text = if NUM_PARTICLES >= 1_000_000 {
-                                        format!("最大粒子容量: {}M", NUM_PARTICLES / 1_000_000)
-                                    } else if NUM_PARTICLES >= 1_000 {
-                                        format!("最大粒子容量: {}K", NUM_PARTICLES / 1_000)
+                                    let particles_text = if num_particles >= 1_000_000 {
+                                        format!("最大粒子容量: {}M", num_particles / 1_000_000)
+                                    } else if num_particles >= 1_000 {
+                                        format!("最大粒子容量: {}K", num_particles / 1_000)
                                     } else {
-                                        format!("最大粒子容量: {}", NUM_PARTICLES)
+                                        format!("最大粒子容量: {}", num_particles)
                                     };
                                     painter.text(
                                         egui::pos2(center_x, y),
@@ -1490,7 +1605,7 @@ async fn run() {
                                     );
                                     // 填充（ratio 相对于 100万）
                                     let reference = 1_000_000u32;
-                                    let ratio = (NUM_PARTICLES as f32 / reference as f32).min(1.0);
+                                    let ratio = (num_particles as f32 / reference as f32).min(1.0);
                                     let fill_rect = egui::Rect::from_min_size(
                                         egui::pos2(bar_left + 2.0, y + 2.0),
                                         egui::vec2((bar_w - 4.0) * ratio, bar_h - 4.0),
@@ -1539,7 +1654,7 @@ async fn run() {
                                                 let (count, label, sq_size, color_rgb) = presets[idx];
                                                 let cell_cx = grid_left + col as f32 * cell_w + cell_w / 2.0;
 
-                                                let available = count <= NUM_PARTICLES;
+                                                let available = count <= num_particles;
 
                                                 // 点击区域覆盖方块+文字
                                                 let hit_rect = egui::Rect::from_min_max(
@@ -1854,6 +1969,12 @@ async fn run() {
                                             ui.add(egui::Slider::new(&mut source_rate, 1.0..=500.0).clamp_to_range(false).text("生成量 (粒子/秒)"));
                                             ui.add(egui::Slider::new(&mut source_angle, 0.0..=360.0).clamp_to_range(false).text("喷射方向 (度)"));
                                             ui.add(egui::Slider::new(&mut source_speed, 0.0..=20.0).clamp_to_range(false).text("喷射速度"));
+                                        } else if selected_source_type == 0 {
+                                            ui.add(egui::Slider::new(&mut source_light_rate, 1.0..=10000.0).clamp_to_range(false).logarithmic(true).text("发光量(光子/秒)"));
+                                            ui.add(egui::Slider::new(&mut source_light_angle, 0.0..=360.0).clamp_to_range(false).text("发射角度(度)"));
+                                            ui.add(egui::Slider::new(&mut source_light_speed, 0.1..=100.0).clamp_to_range(false).logarithmic(true).text("光子速度"));
+                                            ui.add(egui::Slider::new(&mut source_light_energy, 0.01..=10000.0).clamp_to_range(false).logarithmic(true).text("光子能量"));
+                                            ui.add(egui::Slider::new(&mut source_light_lifetime, 0.1..=60.0).clamp_to_range(false).logarithmic(true).text("光子寿命(秒)"));
                                         } else if selected_source_type == 2 {
                                             ui.add(egui::Slider::new(&mut source_force, -0.05..=0.05).clamp_to_range(false).max_decimals(10).text("力场强度"));
                                             ui.label(if source_force > 0.0 { "效果：吸引" } else { "效果：排斥" });
@@ -1978,6 +2099,10 @@ async fn run() {
                                 ui.horizontal(|ui| {
                                     ui.label("子步:");
                                     ui.add(egui::Slider::new(&mut substeps, 1..=256));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("光子子步:");
+                                    ui.add(egui::Slider::new(&mut photon_substeps, 1..=64));
                                 });
                                 ui.horizontal(|ui| {
                                     ui.label("时间步长:");
@@ -2264,27 +2389,30 @@ async fn run() {
                                         }
 
                                         response.context_menu(|ui| {
-                                            if mat >= 8 {
-                                                if ui.button("✏ 编辑(Edit)").clicked() {
-                                                    editing_material_index = Some(mat as usize);
-                                                    if let Some(m) = materials.get(mat as usize) {
-                                                        new_material_name = m.name.clone();
-                                                        new_material_color = m.color;
-                                                        new_material_color2 = m.color2.unwrap_or(m.color);
-                                                        new_material_is_noisy = m.is_noisy.unwrap_or(false);
-                                                        new_material_is_soft = m.is_soft.unwrap_or(false);
-                                                        new_material_mass = m.mass;
-                                                        new_material_diameter = m.diameter;
-                                                        new_material_conn_dist = m.conn_dist_mult;
-                                                        new_material_link_dist = m.link_dist_strength;
-                                                        new_material_link_angle = m.link_angle_strength;
-                                                        new_material_melt = m.melt_temp;
-                                                        new_material_boil = m.boil_temp.unwrap_or(2000.0);
-                                                        new_material_surface_tension = m.surface_tension.unwrap_or(0.0);
-                                                    }
-                                                    show_add_material_window = true;
-                                                    ui.close_menu();
+                                            if ui.button("✏ 编辑(Edit)").clicked() {
+                                                editing_material_index = Some(mat as usize);
+                                                if let Some(m) = materials.get(mat as usize) {
+                                                    new_material_name = m.name.clone();
+                                                    new_material_color = m.color;
+                                                    new_material_color2 = m.color2.unwrap_or(m.color);
+                                                    new_material_is_noisy = m.is_noisy.unwrap_or(false);
+                                                    new_material_is_soft = m.is_soft.unwrap_or(false);
+                                                    new_material_mass = m.mass;
+                                                    new_material_diameter = m.diameter;
+                                                    new_material_conn_dist = m.conn_dist_mult;
+                                                    new_material_link_dist = m.link_dist_strength;
+                                                    new_material_link_angle = m.link_angle_strength;
+                                                    new_material_melt = m.melt_temp;
+                                                    new_material_boil = m.boil_temp.unwrap_or(2000.0);
+                                                    new_material_surface_tension = m.surface_tension.unwrap_or(0.0);
+                                                    new_material_light_transmission = m.light_transmission.unwrap_or(0.0);
+                                                    new_material_light_reflectivity = m.light_reflectivity.unwrap_or(0.0);
+                                                    new_material_refractive_index = m.refractive_index.unwrap_or(1.0);
                                                 }
+                                                show_add_material_window = true;
+                                                ui.close_menu();
+                                            }
+                                            if mat >= 8 {
                                                 if ui.button("🗑 删除(Delete)").clicked() {
                                                     deleting_material_index = Some(mat as usize);
                                                     ui.close_menu();
@@ -2328,6 +2456,9 @@ async fn run() {
                                         new_material_melt = 1000.0f32;
                                         new_material_boil = 2000.0f32;
                                         new_material_surface_tension = 0.0f32;
+                                        new_material_light_transmission = 0.0f32;
+                                        new_material_light_reflectivity = 0.0f32;
+                                        new_material_refractive_index = 1.0f32;
                                         show_add_material_window = true;
                                     }
                                 });
@@ -2371,6 +2502,10 @@ async fn run() {
                                     ui.horizontal(|ui| { ui.label("沸点 (°C):"); ui.add(egui::DragValue::new(&mut new_material_boil).speed(10.0)); });
                                     ui.horizontal(|ui| { ui.label("表面张力:"); ui.add(egui::DragValue::new(&mut new_material_surface_tension).clamp_range(0.0f32..=1.0).speed(0.01)); });
                                     
+                                    ui.horizontal(|ui| { ui.label("光透射率:"); ui.add(egui::DragValue::new(&mut new_material_light_transmission).clamp_range(0.0f32..=1.0).speed(0.01)); });
+                                    ui.horizontal(|ui| { ui.label("光反射率:"); ui.add(egui::DragValue::new(&mut new_material_light_reflectivity).clamp_range(0.0f32..=1.0).speed(0.01)); });
+                                    ui.horizontal(|ui| { ui.label("折射率:"); ui.add(egui::DragValue::new(&mut new_material_refractive_index).clamp_range(1.0f32..=100.0).speed(0.01)); });
+                                    
                                     ui.separator();
                                     ui.horizontal(|ui| {
                                         let btn_label = if editing_material_index.is_some() { "保存" } else { "添加" };
@@ -2390,6 +2525,9 @@ async fn run() {
                                                     m.is_soft = Some(new_material_is_soft);
                                                     m.is_noisy = Some(new_material_is_noisy);
                                                     m.surface_tension = Some(new_material_surface_tension);
+                                                    m.light_transmission = Some(new_material_light_transmission);
+                                                    m.light_reflectivity = Some(new_material_light_reflectivity);
+                                                    m.refractive_index = Some(new_material_refractive_index);
                                                 }
                                                 if let Ok(json) = serde_json::to_string_pretty(&materials) {
                                                     let _ = std::fs::write("materials.json", json);
@@ -2412,6 +2550,9 @@ async fn run() {
                                                         is_soft: Some(new_material_is_soft),
                                                         is_noisy: Some(new_material_is_noisy),
                                                         surface_tension: Some(new_material_surface_tension),
+                                                        light_transmission: Some(new_material_light_transmission),
+                                                        light_reflectivity: Some(new_material_light_reflectivity),
+                                                        refractive_index: Some(new_material_refractive_index),
                                                     });
                                                     if let Ok(json) = serde_json::to_string_pretty(&materials) {
                                                         let _ = std::fs::write("materials.json", json);
@@ -2983,6 +3124,13 @@ async fn run() {
                                         ui.add(egui::Slider::new(rate_per_sec, 1.0..=2000.0).clamp_to_range(false).text("生成量(粒子/秒)"));
                                         ui.add(egui::Slider::new(angle, 0.0..=360.0).clamp_to_range(false).text("喷射方向(度)"));
                                         ui.add(egui::Slider::new(speed, 0.0..=50.0).clamp_to_range(false).text("喷射速度"));
+                                    }
+                                    if let WorldSourceType::Light { ref mut rate_per_sec, ref mut angle, ref mut speed, ref mut energy, ref mut lifetime, .. } = src.source_type {
+                                        ui.add(egui::Slider::new(rate_per_sec, 1.0..=10000.0).clamp_to_range(false).logarithmic(true).text("发光量(光子/秒)"));
+                                        ui.add(egui::Slider::new(angle, 0.0..=360.0).clamp_to_range(false).text("发射角度(度)"));
+                                        ui.add(egui::Slider::new(speed, 0.1..=100.0).clamp_to_range(false).logarithmic(true).text("光子速度"));
+                                        ui.add(egui::Slider::new(energy, 0.01..=10000.0).clamp_to_range(false).logarithmic(true).text("光子能量"));
+                                        ui.add(egui::Slider::new(lifetime, 0.1..=60.0).clamp_to_range(false).logarithmic(true).text("光子寿命(秒)"));
                                     }
                                     if let WorldSourceType::Gravity { ref mut force } = src.source_type {
                                         ui.add(egui::Slider::new(force, -0.05..=0.05).clamp_to_range(false).max_decimals(10).text("力场强度"));
@@ -3618,10 +3766,52 @@ async fn run() {
                                             active_particles += 1;
                                         }
                                     }
+                                } else if let WorldSourceType::Light { rate_per_sec, ref mut delay_accum, angle, speed, energy, lifetime } = src.source_type {
+                                    let spawn_count_f = rate_per_sec * dt;
+                                    *delay_accum += spawn_count_f;
+                                    let mut spawned = 0;
+                                    while *delay_accum >= 1.0 && spawned < 1000 { // limit spawn per frame
+                                        *delay_accum -= 1.0;
+                                        spawned += 1;
+                                        
+                                        let rand_theta = if angle >= 360.0 { rand::random::<f32>() * std::f32::consts::TAU } else { 
+                                            let spread = angle.to_radians();
+                                            (rand::random::<f32>() - 0.5) * spread - std::f32::consts::FRAC_PI_2
+                                        };
+                                        // 0.1% speed deviation
+                                        let speed_var = speed * (1.0 + (rand::random::<f32>() - 0.5) * 0.002);
+                                        let vel_x = speed_var * rand_theta.cos();
+                                        let vel_y = speed_var * rand_theta.sin();
+                                        
+                                        let rand_r = src.radius * rand::random::<f32>().sqrt();
+                                        let rand_ang = rand::random::<f32>() * std::f32::consts::TAU;
+                                        
+                                        // Temporal sub-frame interpolation to break up concentric rings
+                                        let rand_t = rand::random::<f32>() * dt;
+                                        let spawn_pos = [
+                                            src.pos[0] + rand_r * rand_ang.cos() + vel_x * rand_t, 
+                                            src.pos[1] + rand_r * rand_ang.sin() + vel_y * rand_t
+                                        ];
+                                        let p = Photon {
+                                            pos: spawn_pos,
+                                            vel: [vel_x, vel_y],
+                                            energy,
+                                            lifetime,
+                                            max_lifetime: lifetime,
+                                            speed: speed_var,
+                                            last_hit_id: -1i32,
+                                            path_idx: 0,
+                                            _pad: [0.0; 2],
+                                            path: [[spawn_pos[0], spawn_pos[1]]; 16],
+                                        };
+                                        
+                                        queue.write_buffer(&photon_buf, (photon_head as u64) * std::mem::size_of::<Photon>() as u64, bytemuck::bytes_of(&p));
+                                        photon_head = (photon_head + 1) % MAX_PHOTONS;
+                                        active_photons = (active_photons + 1).min(MAX_PHOTONS);
+                                    }
                                 }
                             }
                         }
-
                         // Ctrl + Left click forces link reconfiguration! (Merged Ctrl actions)
                         if left_pressed && ctrl_held {
                             force_reconnect = 1.0;
@@ -3686,9 +3876,13 @@ async fn run() {
                             is_paused_flag: if is_paused { 1 } else { 0 },
                             num_gravity_sources,
                             allow_surface_tension: if allow_surface_tension { 1 } else { 0 },
+                            photon_substeps,
+                            _pad_a: 0,
+                            _pad_b: 0,
+                            _pad_c: 0,
                             gravity_sources: gravity_sources_arr,
                             materials: {
-                                let mut arr = [MaterialPropsWGSL { base_color: [0.0; 4], color2: [0.0; 4], conn_dist: 0.0, len_break: 0.0, ang_break: 0.0, melt_temp: 0.0, boil_temp: 0.0, flags: 0, surface_tension: 0.0, _pad2: 0.0 }; 16];
+                                let mut arr = [MaterialPropsWGSL { base_color: [0.0; 4], color2: [0.0; 4], conn_dist: 0.0, len_break: 0.0, ang_break: 0.0, melt_temp: 0.0, boil_temp: 0.0, flags: 0, surface_tension: 0.0, light_transmission: 0.0, light_reflectivity: 0.0, refractive_index: 0.0, _pad1: 0.0, _pad2: 0.0 }; 16];
                                 for (i, m) in materials.iter().enumerate().take(16) {
                                     let is_noisy_legacy = i == 1 || i == 4 || i == 5 || i == 7;
                                     let is_soft_legacy = i == 3 || i == 7;
@@ -3721,6 +3915,10 @@ async fn run() {
                                     let boil = m.boil_temp.unwrap_or(boil_legacy);
                                     let st = m.surface_tension.unwrap_or(if i == 0 { 0.3 } else { 0.0 });
                                     
+                                    let lt = m.light_transmission.unwrap_or(if i == 5 { 0.9 } else if i == 0 { 0.5 } else { 0.0 });
+                                    let lr = m.light_reflectivity.unwrap_or(if i == 2 || i == 6 { 0.5 } else { 0.1 });
+                                    let ri = m.refractive_index.unwrap_or(if i == 5 { 1.5 } else if i == 0 { 1.33 } else { 1.0 });
+
                                     let mut flags = 0;
                                     if soft { flags |= 1; }
                                     if noisy { flags |= 2; }
@@ -3736,6 +3934,10 @@ async fn run() {
                                         boil_temp: boil,
                                         flags,
                                         surface_tension: st,
+                                        light_transmission: lt,
+                                        light_reflectivity: lr,
+                                        refractive_index: ri,
+                                        _pad1: 0.0,
                                         _pad2: 0.0,
                                     };
                                 }
@@ -3750,7 +3952,7 @@ async fn run() {
                             // === GPU Compute Path ===
                             if !is_paused {
                                 let active_wg = (active_particles + 63) / 64;
-                                for _ in 0..substeps {
+                                for sub in 0..substeps {
                                     {
                                         let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                             label: None,
@@ -3769,6 +3971,14 @@ async fn run() {
 
                                             cp.set_pipeline(pipeline_physics.as_ref().unwrap());
                                             cp.dispatch_workgroups(wg_x, wg_y, 1);
+                                        }
+
+                                        // Photon physics on last substep, SAME pass = SAME grid
+                                        if sub == substeps - 1 && active_photons > 0 {
+                                            let p_wg = (active_photons + 63) / 64;
+                                            cp.set_pipeline(p_photons.as_ref().unwrap());
+                                            // Same bind group - no need to set again
+                                            cp.dispatch_workgroups(p_wg, 1, 1);
                                         }
                                     }
                                 }
@@ -3841,9 +4051,9 @@ async fn run() {
                                     resolve_target: Some(&view),
                                     ops: wgpu::Operations {
                                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                                            r: 0.02,
-                                            g: 0.02,
-                                            b: 0.05,
+                                            r: 0.0024,
+                                            g: 0.0024,
+                                            b: 0.0024,
                                             a: 1.0,
                                         }),
                                         store: wgpu::StoreOp::Store,
@@ -3867,6 +4077,12 @@ async fn run() {
 
                             rp.set_pipeline(&render_pipeline);
                             rp.draw(0..4, 0..active_draw);
+
+                            if let Some(ref photons_pipe) = render_photons_pipeline {
+                                rp.set_pipeline(&photons_pipe.1);
+                                rp.set_bind_group(0, &photons_pipe.0, &[]);
+                                rp.draw(0..32, 0..MAX_PHOTONS); // 光子线段实例渲染 (16段 x 2点)
+                            }
                         }
 
                         // 3) Egui Overlay Render Pass
@@ -3957,7 +4173,7 @@ async fn run() {
 
             if pending_save_snapshot {
                             pending_save_snapshot = false;
-                            let particle_size = (NUM_PARTICLES as u64) * (std::mem::size_of::<Particle>() as u64);
+                            let particle_size = (num_particles as u64) * (std::mem::size_of::<Particle>() as u64);
 
                             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                             encoder.copy_buffer_to_buffer(&particle_buf, 0, &particle_staging_buf, 0, particle_size);
@@ -3969,7 +4185,7 @@ async fn run() {
                             device.poll(wgpu::Maintain::Wait);
                             if rx.recv().unwrap().is_ok() {
                                 let particle_view = particle_staging_buf.slice(..).get_mapped_range();
-                                let mut built_particles: &[Particle] = bytemuck::cast_slice(&particle_view);
+                                let built_particles: &[Particle] = bytemuck::cast_slice(&particle_view);
                                 let active_data = &built_particles[..active_particles as usize];
                                 
                                 let mut hinges = 0u32;
@@ -4053,7 +4269,7 @@ async fn run() {
                         }
 
                         if let Some(box_rect) = pending_copy_box.take() {
-                            let particle_size = (NUM_PARTICLES as u64) * (std::mem::size_of::<Particle>() as u64);
+                            let particle_size = (num_particles as u64) * (std::mem::size_of::<Particle>() as u64);
 
                             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                             encoder.copy_buffer_to_buffer(&particle_buf, 0, &particle_staging_buf, 0, particle_size);
@@ -4065,7 +4281,7 @@ async fn run() {
                             device.poll(wgpu::Maintain::Wait);
                             if rx.recv().unwrap().is_ok() {
                                 let particle_view = particle_staging_buf.slice(..).get_mapped_range();
-                                let mut built_particles: &[Particle] = bytemuck::cast_slice(&particle_view);
+                                let built_particles: &[Particle] = bytemuck::cast_slice(&particle_view);
                                 let active_data = &built_particles[..active_particles as usize];
                                 
                                 let mut copied = Vec::new();

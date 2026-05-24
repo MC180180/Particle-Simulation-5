@@ -39,6 +39,10 @@ struct MaterialProps {
     boil_temp: f32,
     flags: u32,
     surface_tension: f32,
+    light_transmission: f32,
+    light_reflectivity: f32,
+    refractive_index: f32,
+    _pad1: f32,
     _pad2: f32,
 }
 
@@ -71,6 +75,10 @@ struct SimParams {
     is_paused_flag: u32,
     num_gravity_sources: u32,
     allow_surface_tension: u32,
+    _photon_substeps: u32,
+    _pad_a: u32,
+    _pad_b: u32,
+    _pad_c: u32,
     gravity_sources: array<vec4<f32>, 8>,
     materials: array<MaterialProps, 16>,
 }
@@ -78,6 +86,7 @@ struct SimParams {
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> camera: Camera;
 @group(0) @binding(2) var<uniform> params: SimParams;
+@group(0) @binding(3) var<storage, read> light_buf: array<i32>;
 
 
 fn apply_temperature_color(base_color: vec3<f32>, temp: f32) -> vec3<f32> {
@@ -126,7 +135,7 @@ fn apply_temperature_color(base_color: vec3<f32>, temp: f32) -> vec3<f32> {
     return mix(base_color, temp_col, blend);
 }
 
-fn apply_dynamic_effects(orig_color: vec4<f32>, speed: f32, q: f32, temp: f32, m_type: u32) -> vec4<f32> {
+fn apply_dynamic_effects(orig_color: vec4<f32>, speed: f32, q: f32, temp: f32, m_type: u32, base_brightness: f32, boil_pt: f32) -> vec4<f32> {
     var color = orig_color.rgb;
     
     let is_fluid = (params.materials[m_type].flags & 4u) != 0u;
@@ -168,6 +177,16 @@ fn apply_dynamic_effects(orig_color: vec4<f32>, speed: f32, q: f32, temp: f32, m
     color = mix(color, charge_color, blend) + charge_color * (blend * 0.8);
     
     color = apply_temperature_color(color, temp);
+    
+    var heat_brightness = 0.0;
+    if (boil_pt > 0.0 && temp >= boil_pt) {
+        let t = clamp((temp - boil_pt) / (boil_pt * 3.0), 0.0, 1.0);
+        heat_brightness = mix(0.01, 1.0, t);
+    }
+    
+    let final_brightness = max(base_brightness, heat_brightness);
+    color = color * final_brightness;
+    
     return vec4<f32>(color, orig_color.a);
 }
 
@@ -192,6 +211,7 @@ fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -
     let min_radius = 0.003 / max(camera.zoom, 0.0001);
     let compensated_radius = max(radius, min_radius);
     radius = min(compensated_radius, 0.008);
+    radius *= 2.0;
 
     let m_type = p.mat_type & 0xFFu;
     let material = params.materials[m_type];
@@ -205,7 +225,13 @@ fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -
     }
 
     let speed = length(p.vel);
-    out.color = apply_dynamic_effects(orig_color, speed, p.charge, p.temperature, m_type);
+    
+    // Photon lighting
+    let light_raw = f32(light_buf[iid]) / 10000.0;
+    var light_brightness = clamp(light_raw / 0.1, 0.0, 1.0);
+    let base_brightness = mix(0.05, 1.0, light_brightness);
+
+    out.color = apply_dynamic_effects(orig_color, speed, p.charge, p.temperature, m_type, base_brightness, boil_pt);
     if (p.temperature > boil_pt) {
         let gas_t = clamp((p.temperature - boil_pt) / (boil_pt * 2.0), 0.0, 1.0);
         let scale_factor = mix(1.0, 4.0, gas_t);
@@ -227,6 +253,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let dist = length(in.uv);
     if (dist > 1.0) { discard; }
     
-    let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
-    return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    let core_alpha = 1.0 - smoothstep(0.4, 0.5, dist);
+    let glow_intensity = 1.0 - smoothstep(0.4, 1.0, dist);
+    
+    let color = in.color.rgb;
+    let brightness = max(color.r, max(color.g, color.b));
+    let glow = color * glow_intensity * brightness * 1.5;
+    
+    let base_alpha = in.color.a * core_alpha;
+    let final_rgb = color * base_alpha + glow;
+    
+    return vec4<f32>(final_rgb, base_alpha);
 }

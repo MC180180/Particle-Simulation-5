@@ -29,6 +29,10 @@ struct MaterialProps {
     melt_temp: f32,
     boil_temp: f32,
     flags: u32,
+    surface_tension: f32,
+    light_transmission: f32,
+    light_reflectivity: f32,
+    refractive_index: f32,
     _pad1: f32,
     _pad2: f32,
 }
@@ -62,6 +66,10 @@ struct SimParams {
     is_paused_flag: u32,
     num_gravity_sources: u32,
     _pad3: u32,
+    _photon_substeps: u32,
+    _pad_a: u32,
+    _pad_b: u32,
+    _pad_c: u32,
     gravity_sources: array<vec4<f32>, 8>,
     materials: array<MaterialProps, 16>,
 }
@@ -69,6 +77,7 @@ struct SimParams {
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> camera: Camera;
 @group(0) @binding(2) var<uniform> params: SimParams;
+@group(0) @binding(3) var<storage, read> light_buf: array<i32>;
 
 
 fn apply_temperature_color(base_color: vec3<f32>, temp: f32) -> vec3<f32> {
@@ -117,7 +126,7 @@ fn apply_temperature_color(base_color: vec3<f32>, temp: f32) -> vec3<f32> {
     return mix(base_color, temp_col, blend);
 }
 
-fn apply_dynamic_effects(orig_color: vec4<f32>, speed: f32, q: f32, temp: f32, m_type: u32) -> vec4<f32> {
+fn apply_dynamic_effects(orig_color: vec4<f32>, speed: f32, q: f32, temp: f32, m_type: u32, base_brightness: f32, boil_pt: f32) -> vec4<f32> {
     var color = orig_color.rgb;
     
     // 1. Fluid Velocity Brightening
@@ -160,8 +169,19 @@ fn apply_dynamic_effects(orig_color: vec4<f32>, speed: f32, q: f32, temp: f32, m
     }
     color = mix(color, charge_color, blend) + charge_color * (blend * 0.8);
     
-    // 3. Temperature
+    // 3. Temperature Color
     color = apply_temperature_color(color, temp);
+    
+    // 4. Apply Photon Lighting & Heat Dimming
+    var heat_brightness = 0.0;
+    if (boil_pt > 0.0 && temp >= boil_pt) {
+        let t = clamp((temp - boil_pt) / (boil_pt * 3.0), 0.0, 1.0);
+        heat_brightness = mix(0.01, 1.0, t);
+    }
+    
+    let final_brightness = max(base_brightness, heat_brightness);
+    color = color * final_brightness;
+    
     return vec4<f32>(color, orig_color.a);
 }
 
@@ -192,6 +212,8 @@ fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -
     let min_radius = 0.003 / max(camera.zoom, 0.0001);
     let compensated_radius = max(radius, min_radius);
     radius = min(compensated_radius, 0.008);
+    // Double radius to accommodate glow effect
+    radius *= 2.0;
 
     // 气态热膨胀与透明度计算
     let m_type = p.mat_type & 0xFFu;
@@ -207,7 +229,15 @@ fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -
 
     // Calculate dynamic runtime colors purely for rendering
     let speed = length(p.vel);
-    out.color = apply_dynamic_effects(orig_color, speed, p.charge, p.temperature, m_type);
+    
+    // Photon lighting: dim to 5% by default, photon energy restores brightness
+    // 0.1 energy (1000 in fixed-point) = full original brightness
+    let light_raw = f32(light_buf[iid]) / 10000.0; // convert from fixed-point
+    var light_brightness = clamp(light_raw / 0.1, 0.0, 1.0); // 0.1 energy = full
+    // Base brightness: 5% without light, up to 100% with light
+    let base_brightness = mix(0.05, 1.0, light_brightness);
+
+    out.color = apply_dynamic_effects(orig_color, speed, p.charge, p.temperature, m_type, base_brightness, boil_pt);
     if (p.temperature > boil_pt) {
         let gas_t = clamp((p.temperature - boil_pt) / (boil_pt * 2.0), 0.0, 1.0);
         let scale_factor = mix(1.0, 4.0, gas_t);
@@ -248,11 +278,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // 生成 6 个固定在边缘对应内部物理连接点的端点显示
         for (var k = 0u; k < 6u; k++) {
             let ang = in.angle + f32(k) * pi_over_3;
-            // 把端口放置在边缘稍微靠里的位置以免裁剪
-            let port_pos = vec2<f32>(cos(ang), sin(ang)) * 0.75; 
+            // Scale positions by 0.5 because the quad size is doubled for glow
+            let port_pos = vec2<f32>(cos(ang), sin(ang)) * 0.375; 
             let d = length(in.uv - port_pos);
-            if (d < 0.25) {
-                let mix_factor = smoothstep(0.25, 0.15, d) * port_alpha;
+            if (d < 0.125) {
+                let mix_factor = smoothstep(0.125, 0.075, d) * port_alpha;
                 let is_linked = ((in.link_mask >> k) & 1u) != 0u;
                 if (is_linked) {
                     // 已建立连结：填充白色小实心圆点
@@ -265,8 +295,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
     
-    let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
-    return vec4<f32>(color, in.color.a * alpha);
+    // 1.0 to 0.0 transition starts at 0.4 instead of 0.8 because UV is 2x larger
+    let core_alpha = 1.0 - smoothstep(0.4, 0.5, dist);
+    
+    // Glow effect starts at 0.4 and fades to 0.0 at the outer edge
+    let glow_intensity = 1.0 - smoothstep(0.4, 1.0, dist);
+    
+    // Calculate brightness of the particle to determine glow strength
+    let brightness = max(color.r, max(color.g, color.b));
+    let glow = color * glow_intensity * brightness * 1.5;
+    
+    // Premultiplied alpha blending:
+    // Solid core has alpha = in.color.a
+    // Glow region has alpha = 0.0, but positive RGB values, causing additive blending
+    let base_alpha = in.color.a * core_alpha;
+    let final_rgb = color * base_alpha + glow;
+    
+    return vec4<f32>(final_rgb, base_alpha);
 }
 
 struct LinkVertexOutput {
@@ -297,7 +342,8 @@ fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u
     let compensated_radius = max(radius, min_radius);
     radius = min(compensated_radius, 0.008);
     
-    let w = radius * 0.95; // 连线宽度略小于粒子自身外径
+    // Double width to accommodate glow effect
+    let w = radius * 0.95 * 2.0; 
     let A = p.pos;
     let B = other.pos;
     let diff = B - A;
@@ -331,6 +377,10 @@ fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u
         c1 = vec4<f32>(mix(c1.rgb, mat1.color2.rgb, noise), c1.a);
     }
     
+    let light_raw1 = f32(light_buf[iid]) / 10000.0;
+    let base_brightness1 = mix(0.05, 1.0, clamp(light_raw1 / 0.1, 0.0, 1.0));
+    let c1_dyn = apply_dynamic_effects(c1, length(p.vel), p.charge, p.temperature, m1_id, base_brightness1, mat1.boil_temp);
+    
     let m2_id = other.mat_type & 0xFFu;
     let mat2 = params.materials[m2_id];
     var c2 = mat2.base_color;
@@ -339,7 +389,11 @@ fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u
         c2 = vec4<f32>(mix(c2.rgb, mat2.color2.rgb, noise), c2.a);
     }
 
-    out.color = mix(c1, c2, uv.y);
+    let light_raw2 = f32(light_buf[neighbor_id]) / 10000.0;
+    let base_brightness2 = mix(0.05, 1.0, clamp(light_raw2 / 0.1, 0.0, 1.0));
+    let c2_dyn = apply_dynamic_effects(c2, length(other.vel), other.charge, other.temperature, m2_id, base_brightness2, mat2.boil_temp);
+
+    out.color = mix(c1_dyn, c2_dyn, uv.y);
     out.color.a *= 0.6; // 连线偏透明不喧宾夺主
     
     return out;
@@ -348,6 +402,15 @@ fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u
 @fragment
 fn fs_link_main(in: LinkVertexOutput) -> @location(0) vec4<f32> {
     let edge_dist = abs(in.uv.x);
-    let alpha = 1.0 - smoothstep(0.8, 1.0, edge_dist);
-    return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    let core_alpha = 1.0 - smoothstep(0.4, 0.5, edge_dist);
+    let glow_intensity = 1.0 - smoothstep(0.4, 1.0, edge_dist);
+    
+    let color = in.color.rgb;
+    let brightness = max(color.r, max(color.g, color.b));
+    let glow = color * glow_intensity * brightness * 0.8;
+    
+    let base_alpha = in.color.a * core_alpha;
+    let final_rgb = color * base_alpha + glow;
+    
+    return vec4<f32>(final_rgb, base_alpha);
 }
