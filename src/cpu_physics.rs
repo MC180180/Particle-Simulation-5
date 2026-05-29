@@ -217,7 +217,7 @@ fn compute_particle(
         p.links = [-1; 6];
     }
 
-    let my_rest = DECAY * m1.conn_dist;
+    let _my_rest = DECAY * m1.conn_dist;
 
     // ===== STEP 1: Link spring constraints (XPBD) =====
     for k in 0..6 {
