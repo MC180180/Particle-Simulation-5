@@ -17,7 +17,8 @@ struct Photon {
     speed: f32,
     last_hit_id: i32,
     path_idx: u32,
-    _pad: vec2<f32>,
+    wavelength: f32,
+    heat_capacity: f32,
     path: array<vec2<f32>, 16>,
 }
 
@@ -65,10 +66,53 @@ fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -
         world_pos = p.pos;
     }
 
-    let t = f32(point_idx) / max(f32(total_points - 1u), 1.0);
-    let point_alpha = base_alpha * mix(0.1, 1.0, t);
+    var r = 1.0;
+    var g = 1.0;
+    var b = 1.0;
+    let wl = p.wavelength;
+    
+    if (wl >= 380.0 && wl < 440.0) {
+        r = -(wl - 440.0) / (440.0 - 380.0);
+        g = 0.0;
+        b = 1.0;
+    } else if (wl >= 440.0 && wl < 490.0) {
+        r = 0.0;
+        g = (wl - 440.0) / (490.0 - 440.0);
+        b = 1.0;
+    } else if (wl >= 490.0 && wl < 510.0) {
+        r = 0.0;
+        g = 1.0;
+        b = -(wl - 510.0) / (510.0 - 490.0);
+    } else if (wl >= 510.0 && wl < 580.0) {
+        r = (wl - 510.0) / (580.0 - 510.0);
+        g = 1.0;
+        b = 0.0;
+    } else if (wl >= 580.0 && wl < 645.0) {
+        r = 1.0;
+        g = -(wl - 645.0) / (645.0 - 580.0);
+        b = 0.0;
+    } else if (wl >= 645.0 && wl <= 780.0) {
+        r = 1.0;
+        g = 0.0;
+        b = 0.0;
+    } else if (wl < 380.0) {
+        r = 0.5; g = 0.0; b = 1.0;
+    } else {
+        r = 1.0; g = 0.0; b = 0.0;
+    }
 
-    out.color = vec4<f32>(1.0, 1.0, 1.0, point_alpha);
+    var wl_alpha = 1.0;
+    if (wl < 380.0) {
+        wl_alpha = smoothstep(100.0, 380.0, wl);
+    } else if (wl > 780.0) {
+        wl_alpha = 1.0 - smoothstep(780.0, 1500.0, wl);
+    }
+
+    let t = f32(point_idx) / max(f32(total_points - 1u), 1.0);
+    let point_alpha = base_alpha * mix(0.1, 1.0, t) * wl_alpha;
+    let energy_glow = max(1.0, p.energy * 0.5);
+
+    out.color = vec4<f32>(r * energy_glow, g * energy_glow, b * energy_glow, point_alpha);
 
     let p_rel = world_pos - camera.offset;
     let scale = vec2<f32>(1.0 / camera.aspect, 1.0) * camera.zoom;

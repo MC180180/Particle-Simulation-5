@@ -61,7 +61,7 @@ impl CpuPhysics {
             *p = r.particle;
 
             // Kahan summation position integration
-            if p.inv_mass > 0.001 || (p.mat_type & 0x80000000) != 0 {
+            if p.inv_mass.abs() > 0.001 || (p.mat_type & 0x80000000) != 0 {
                 let res = &mut self.pos_residue[i];
                 let delta = [p.vel[0] * params.dt + res[0], p.vel[1] * params.dt + res[1]];
                 let old_pos = p.pos;
@@ -96,7 +96,7 @@ impl CpuPhysics {
             } else { coll };
 
             // Fixed particles: no corrections
-            if p.inv_mass < 0.001 && p.grav_scale >= -0.5 {
+            if p.inv_mass.abs() < 0.001 && p.grav_scale >= -0.5 {
                 // skip corrections
             } else {
                 p.pos[0] += corr_clamped[0] + coll_clamped[0];
@@ -111,7 +111,7 @@ impl CpuPhysics {
             }
 
             // Boundary collision
-            if p.inv_mass > 0.001 {
+            if p.inv_mass.abs() > 0.001 {
                 let bound = params.scene_scale;
                 let mg = 0.005;
                 if p.pos[1] < -bound + mg { p.pos[1] = -bound + mg; p.vel[1] = p.vel[1].abs() * 0.3; }
@@ -182,19 +182,31 @@ fn compute_particle(
         return PhysicsResult { particle: p, pos_correction: [0.0; 2], pos_corr_collision: [0.0; 2], coll_count: 0.0 };
     }
 
-    // Gravity
-    p.vel[1] -= params.gravity * dt * p.inv_mass * p.grav_scale.max(0.0);
+    let mat_id = (p.mat_type & 0xFF) as usize;
+    let m1 = &params.materials[mat_id.min(15)];
+
+    // 计算重力方向因子：负质量=反重力；气态（温度>沸点）=反重力*0.3
+    let mut grav_sign = p.inv_mass.signum();
+    let boil_pt = m1.boil_temp;
+    if p.temperature > boil_pt && boil_pt > 0.0 {
+        grav_sign = -0.3;
+    }
+
+    // Gravity (mass-independent acceleration)
+    if p.inv_mass.abs() > 0.001 && p.grav_scale > -0.001 {
+        p.vel[1] -= params.gravity * dt * p.grav_scale * grav_sign;
+    }
 
     // Gravity sources
     for gs_i in 0..params.num_gravity_sources.min(8) as usize {
         let src = &params.gravity_sources[gs_i * 4..(gs_i + 1) * 4];
         let diff = [src[0] - p.pos[0], src[1] - p.pos[1]];
         let dist = v2_len(diff);
-        if dist > 0.0 && dist < src[2] {
+        if dist > 0.0 && dist < src[2] && p.inv_mass.abs() > 0.001 && p.grav_scale > -0.001 {
             let dir = [diff[0] / dist, diff[1] / dist];
             let f = src[3] * (1.0 - dist / src[2]);
-            p.vel[0] += dir[0] * f * dt * p.inv_mass;
-            p.vel[1] += dir[1] * f * dt * p.inv_mass;
+            p.vel[0] += dir[0] * f * dt * p.grav_scale * grav_sign;
+            p.vel[1] += dir[1] * f * dt * p.grav_scale * grav_sign;
         }
     }
 
@@ -207,8 +219,6 @@ fn compute_particle(
     let mut spread_charge = 0.0f32;
     let mut spread_count = 0.0f32;
 
-    let mat_id = (p.mat_type & 0xFF) as usize;
-    let m1 = &params.materials[mat_id.min(15)];
     let melt_pt = m1.melt_temp;
     let p_can_melt = p.grav_scale >= 0.0;
 
@@ -271,8 +281,8 @@ fn compute_particle(
             continue;
         }
 
-        let w1 = p.inv_mass;
-        let w2 = other.inv_mass;
+        let w1 = p.inv_mass.abs();
+        let w2 = other.inv_mass.abs();
         let w_sum = w1 + w2;
         if w_sum < 0.00001 { continue; }
 
@@ -332,8 +342,8 @@ fn compute_particle(
 
                         // Collision repulsion
                         if dist < conn && dist > 0.00001 && !already {
-                            let w1 = if p.grav_scale < -0.001 { 0.5 } else { p.inv_mass };
-                            let w2 = if other.grav_scale < -0.001 { 0.5 } else { other.inv_mass };
+                            let w1 = if p.grav_scale < -0.001 { 0.5 } else { p.inv_mass.abs() };
+                            let w2 = if other.grav_scale < -0.001 { 0.5 } else { other.inv_mass.abs() };
                             let w_sum = w1 + w2;
                             if w_sum > 0.00001 {
                                 let w_ratio = w1 / w_sum;
@@ -413,8 +423,8 @@ fn compute_particle(
                         // Surface tension (pairwise attraction)
                         if params.allow_surface_tension != 0 && m1.surface_tension > 0.0 && dist > conn && dist < conn * 2.5 {
                             if p.mat_type == other.mat_type {
-                                let w1 = if p.grav_scale < -0.001 { 0.5 } else { p.inv_mass };
-                                let w2 = if other.grav_scale < -0.001 { 0.5 } else { other.inv_mass };
+                                let w1 = if p.grav_scale < -0.001 { 0.5 } else { p.inv_mass.abs() };
+                                let w2 = if other.grav_scale < -0.001 { 0.5 } else { other.inv_mass.abs() };
                                 let w_sum = w1 + w2;
                                 if w_sum > 0.00001 {
                                     let w_ratio = w1 / w_sum;
@@ -446,7 +456,7 @@ fn compute_particle(
     p.vel[0] += vel_impulse[0];
     p.vel[1] += vel_impulse[1];
     if accumulated_heat > 0.0 {
-        if p.inv_mass == 0.0 || p.grav_scale < -0.0001 {
+        if p.inv_mass.abs() < 0.001 || p.grav_scale < -0.0001 {
             accumulated_heat /= 20.0;
         }
         p.temperature += accumulated_heat;
@@ -474,7 +484,7 @@ fn compute_particle(
         let center = [params.mouse_x, params.mouse_y];
         let to_mouse = [center[0] - p.pos[0], center[1] - p.pos[1]];
         let r = v2_len(to_mouse);
-        if r < params.grab_radius && p.inv_mass > 0.001 {
+        if r < params.grab_radius && p.inv_mass.abs() > 0.001 {
             p.mat_type |= 0x80000000;
             if dm == 10 { p.angle = r; }
         }
@@ -536,7 +546,7 @@ fn compute_particle(
             p.links = [-1; 6];
         }
     } else if dm == 14 {
-        if p.inv_mass > 0.0 {
+        if p.inv_mass.abs() > 0.001 {
             p.mat_type |= 0x40000000;
             p.pos = [20000.0, 20000.0];
             p.inv_mass = 0.0;
@@ -572,7 +582,7 @@ fn compute_particle(
     let speed_loss = spd_before - v2_len(p.vel);
     if speed_loss > 0.0 {
         let mut heat = speed_loss * 1000.0;
-        if p.inv_mass == 0.0 || p.grav_scale < -0.0001 { heat /= 20.0; }
+        if p.inv_mass.abs() < 0.001 || p.grav_scale < -0.0001 { heat /= 20.0; }
         p.temperature += heat;
     }
 
@@ -581,7 +591,7 @@ fn compute_particle(
         let n_budget = -p.grav_scale;
         let spd = v2_len(p.vel);
         if spd > 0.0 {
-            let impulse_this_frame = spd / p.inv_mass.max(0.001);
+            let impulse_this_frame = spd / p.inv_mass.abs().max(0.001);
             if impulse_this_frame <= n_budget {
                 p.grav_scale = -(n_budget - impulse_this_frame);
                 p.vel = [0.0; 2];

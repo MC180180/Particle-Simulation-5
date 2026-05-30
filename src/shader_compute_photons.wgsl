@@ -22,6 +22,11 @@ struct Photon {
     lifetime: f32,
     max_lifetime: f32,
     speed: f32,
+    last_hit_id: i32,
+    path_idx: u32,
+    wavelength: f32,
+    heat_capacity: f32,
+    path: array<vec2<f32>, 16>,
 }
 
 struct MaterialProps {
@@ -37,8 +42,9 @@ struct MaterialProps {
     light_transmission: f32,
     light_reflectivity: f32,
     refractive_index: f32,
-    _pad1: f32,
-    _pad2: f32,
+    heat_conduction: f32,
+    heat_capacity: f32,
+    ref_spectra: array<vec4<f32>, 2>,
 }
 
 struct SimParams {
@@ -70,8 +76,12 @@ struct SimParams {
     is_paused_flag: u32,
     num_gravity_sources: u32,
     allow_surface_tension: u32,
+    photon_substeps: u32,
+    _pad_a: u32,
+    _pad_b: u32,
+    _pad_c: u32,
     gravity_sources: array<vec4<f32>, 8>,
-    materials: array<MaterialProps, 16>,
+    materials: array<MaterialProps, 64>,
 }
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -194,8 +204,30 @@ fn compute_photons(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let hit_pos = old_pos + move_vec * hit_t;
             let normal = normalize(hit_pos - hit_p.pos);
             
-            // Reflection (probabilistic)
-            if (rand_f32(&seed) < m.light_reflectivity) {
+            // Check spectrum reflection: does this photon's wavelength match the material's reflectance spectrum?
+            var reflects = true;
+            if (m.ref_spectra[0].x < m.ref_spectra[0].y) {
+                // Material has spectrum data defined — check if photon wavelength falls in any range
+                reflects = false;
+                for (var k = 0u; k < 4u; k++) {
+                    var r_min = 0.0;
+                    var r_max = 0.0;
+                    if (k % 2u == 0u) {
+                        r_min = m.ref_spectra[k / 2u].x;
+                        r_max = m.ref_spectra[k / 2u].y;
+                    } else {
+                        r_min = m.ref_spectra[k / 2u].z;
+                        r_max = m.ref_spectra[k / 2u].w;
+                    }
+                    if (r_min < r_max && p.wavelength >= r_min && p.wavelength <= r_max) {
+                        reflects = true;
+                        break;
+                    }
+                }
+            }
+
+            // Reflection (probabilistic, gated by spectrum match)
+            if (reflects && rand_f32(&seed) < m.light_reflectivity) {
                 p.vel = reflect(p.vel, normal);
                 p.pos = hit_pos + p.vel * grid_size * 0.5; // bump off
             } else {
