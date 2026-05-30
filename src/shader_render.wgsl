@@ -33,8 +33,9 @@ struct MaterialProps {
     light_transmission: f32,
     light_reflectivity: f32,
     refractive_index: f32,
-    _pad1: f32,
-    _pad2: f32,
+    heat_conduction: f32,
+    heat_capacity: f32,
+    ref_spectra: array<vec4<f32>, 2>,
 }
 
 struct SimParams {
@@ -71,7 +72,7 @@ struct SimParams {
     _pad_b: u32,
     _pad_c: u32,
     gravity_sources: array<vec4<f32>, 8>,
-    materials: array<MaterialProps, 16>,
+    materials: array<MaterialProps, 64>,
 }
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -197,6 +198,11 @@ struct VertexOutput {
 fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> VertexOutput {
     var p = particles[iid];
     var out: VertexOutput;
+
+    if ((p.mat_type & 0x40000000u) != 0u) {
+        out.clip_position = vec4<f32>(0.0);
+        return out;
+    }
 
     // TriangleStrip corner coords [-1, 1]
     var corner = vec2<f32>(0.0, 0.0);
@@ -324,6 +330,11 @@ struct LinkVertexOutput {
 fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> LinkVertexOutput {
     var p = particles[iid];
     var out: LinkVertexOutput;
+    
+    if ((p.mat_type & 0x40000000u) != 0u) {
+        out.clip_position = vec4<f32>(0.0);
+        return out;
+    }
     
     let link_idx = vid / 6u;
     let quad_vid = vid % 6u;

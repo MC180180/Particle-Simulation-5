@@ -23,8 +23,9 @@ struct MaterialProps {
     light_transmission: f32,
     light_reflectivity: f32,
     refractive_index: f32,
-    _pad1: f32,
-    _pad2: f32,
+    heat_conduction: f32,
+    heat_capacity: f32,
+    ref_spectra: array<vec4<f32>, 2>,
 }
 
 struct SimParams {
@@ -61,7 +62,7 @@ struct SimParams {
     _pad_b: u32,
     _pad_c: u32,
     gravity_sources: array<vec4<f32>, 8>,
-    materials: array<MaterialProps, 16>,
+    materials: array<MaterialProps, 64>,
 }
 
 const GRID_W: u32 = 1024u;
@@ -82,11 +83,13 @@ struct Photon {
     speed: f32,
     last_hit_id: i32,
     path_idx: u32,
-    _pad: vec2<f32>,
+    wavelength: f32,
+    heat_capacity: f32,
     path: array<vec2<f32>, 16>,
 }
 @group(0) @binding(5) var<storage, read_write> photons: array<Photon>;
 @group(0) @binding(6) var<storage, read_write> light_buf: array<atomic<i32>>;
+@group(0) @binding(7) var<storage, read_write> stats_buf: array<atomic<u32>>;
 
 fn pos_to_cell(pos: vec2<f32>) -> vec2<i32> {
     let bound = params.scene_scale;
@@ -160,18 +163,35 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
     // 濡傛灉鏄垰鍒氳瀹ｅ憡姝讳骸鐨勮妭鐐癸紝褰诲簳璺宠繃鎺ヤ笅鏉ョ殑鍏ㄩ儴鐗╃悊婕旂畻
     if ((p.mat_type & 0x40000000u) != 0u) { return; }
 
-    // 閲嶅姏锛歡rav_scale > 0 鍙楅噸鍔涳紝= 0 婕傛诞锛? 0 婕傛诞闃诲凹浣擄紙鐢ㄨ礋鍊肩紪鐮侀樆灏煎己搴︼級
-    p.vel.y -= params.gravity * dt * p.inv_mass * max(0.0, p.grav_scale);
+    // 提取 SemiFixed 标志
+    let is_semi_fixed = (p.mat_type & 0x20000000u) != 0u;
 
-    // 寮曞姏婧愬満鍔?
+    let mat_id = p.mat_type & 0xFFu;
+    let m1 = params.materials[mat_id];
+    let heat_cap = max(0.1, m1.heat_capacity);
+
+    // 计算重力方向因子：负质量=反重力；气态（温度>沸点）=反重力*0.3
+    var grav_sign = sign(p.inv_mass);
+    let boil_pt = m1.boil_temp;
+    if (p.temperature > boil_pt && boil_pt > 0.0) {
+        grav_sign = -0.3;
+    }
+
+    // 重力（与质量无关，自由落体加速度统一）
+    if (abs(p.inv_mass) > 0.001 && !is_semi_fixed) {
+        p.vel.y -= params.gravity * dt * p.grav_scale * grav_sign;
+    }
+
+    // 引力源场力
     for (var i = 0u; i < params.num_gravity_sources; i = i + 1u) {
         let src = params.gravity_sources[i];
         let diff = vec2<f32>(src.x, src.y) - p.pos;
         let dist = length(diff);
-        if (dist > 0.0 && dist < src.z) {
+        if (dist > 0.0 && dist < src.z && abs(p.inv_mass) > 0.001 && !is_semi_fixed) {
             let dir = diff / dist;
             let f = src.w * (1.0 - dist / src.z);
-            p.vel += dir * f * dt * p.inv_mass;
+            // 引力场加速度独立于质量，由 grav_sign 决定方向（含气态反重力）
+            p.vel += dir * f * dt * p.grav_scale * grav_sign;
         }
     }
 
@@ -181,6 +201,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
     var pos_corr_collision = vec2<f32>(0.0);   // 纰版挒鎺掓枼浣嶇Щ锛圫TEP 2锛夆€斺€斿崟鐙疮鍔?
     var coll_count = 0.0;                      // 纰版挒璁℃暟鍣紝鐢ㄤ簬骞冲潎鍖栨帹鎸ゅ姏
     var accumulated_heat = 0.0; // 绱鐪熸纰版挒甯︽潵鐨勭函鐩稿閫熷害鍔ㄨ兘浜х儹
+    var accumulated_conduction = 0.0;
 
     let decay = 0.0112;
     let bound2 = params.scene_scale * 2.0;
@@ -191,22 +212,20 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
     var spread_charge = 0.0;
     var spread_count = 0.0;
 
-    let mat_id = p.mat_type & 0xFFu;
-    let m1 = params.materials[mat_id];
     let melt_pt = m1.melt_temp;
 
     // ===== 鐔斿寲鏂紑閫昏緫 =====
-    let p_can_melt = p.grav_scale >= 0.0;
+    let p_can_melt = !is_semi_fixed;
     if (p_can_melt && p.temperature > melt_pt) {
         for (var k = 0u; k < 6u; k++) {
             p.links[k] = -1;
         }
     }
 
-    let my_rest = decay * m1.conn_dist; // 鏈矑瀛愮殑鑷劧闈欐璺濈
+    let my_rest = decay * m1.conn_dist; // 鏈矑瀛愮殑鑷onActivityResult娌璺濈
 
     // ===== STEP 1锛氬鐞嗛寤洪摼鎺ワ紙寮圭哀绾︽潫锛孹PBD锛?====
-    // 杩欓噷浣跨敤"鐪熷疄闈欐璺濈"锛氳繛鎺ユ椂绮掑瓙闂寸殑瀹為檯璺濈鍗充负 rest_dist
+    // 杩欓噷浣跨敤"鐪熷疄闈欐璺濈"锛氳繛鎺ユ椂绮掑瓙闂寸殑瀹為檯璺濈鍗ち涓簉est_dist
     // 鐢变簬鎴戜滑鍦?Rust spawn 鏃跺凡缁忕簿纭帓鍒椾簡绮掑瓙锛屾澶勮繎浼间负鏉愯川鐨?decay*conn_dist
     for (var k = 0u; k < 6u; k++) {
         let ci = p.links[k];
@@ -217,8 +236,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         let other = particles[u32(ci)];
         // 涓ユ牸鐨勯摼鎺ュ鏌ワ細
         // 1. 鍧愭爣蹇呴』瑕佹湁鏁堜笖瀛樻椿
-        // 2. 鍙屾柟鐨勬俯搴﹂兘蹇呴』浣庝簬鍚勮嚜鐨勭啍鐐癸紙鑻ヤ换浣曚竴鏂硅秴杩囩啍鐐癸紝蹇呴』鍙屽悜鍒囨柇锛?
-        //    *渚嬪锛氬鏋滀竴鏂规槸闃诲凹鎬?SemiFixed)杩樻湭鑰楀敖锛屽垯瀹冨嵆渚块珮娓╀篃涓嶄細涓诲姩鎴愪负鏂紑鍘熷洜锛?
+        // 2. 鍙屾柟鐨勬俯搴﹂兘蹇呴』浣庝簬鍚勮嚜鐨勭啍鐐癸細
         // 3. 蹇呴』鏄€愬弻鍚戜簰鎸囥€戠殑鍋ュ悍閾炬帴锛岄槻姝㈠崟鐩告€濆紡鐨勫菇鐏电壍寮曪紙鈥滄垜鏂簡浣嗕粬娌℃柇鈥濓級
         let other_mat_id = other.mat_type & 0xFFu;
         let m2 = params.materials[other_mat_id];
@@ -227,7 +245,8 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         let is_mutual = (other.links[0] == id_i || other.links[1] == id_i || other.links[2] == id_i || 
                          other.links[3] == id_i || other.links[4] == id_i || other.links[5] == id_i);
         
-        let other_can_melt = other.grav_scale >= 0.0;
+        let other_is_semi = (other.mat_type & 0x20000000u) != 0u;
+        let other_can_melt = !other_is_semi;
 
         if (!is_valid_v2(other.pos) || (other.mat_type & 0x40000000u) != 0u ||
             (p_can_melt && p.temperature > melt_pt) || 
@@ -240,7 +259,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         let diff = p.pos - other.pos;
         let dist = length(diff);
 
-        // 鏋佺璺濈淇濇姢锛氳秴杩?5 鍊嶈嚜鐒惰窛绂荤洿鎺ュ壀鏂紙闃插菇鐏甸摼鎺ワ級
+        // 鏋佺璺濈淇濇姢锛氳秴杩?5 鍊})$-嚜鐒惰窛绂荤洿鎺ュ壀鏂紙闃插菇鐏甸摼鎺ワ級
         let rest = decay * (m1.conn_dist + m2.conn_dist) * 0.5;
         if (dist > rest * 5.0 || dist < 0.00001) {
             p.links[k] = -1;
@@ -266,8 +285,8 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
 
         // ======= 鍒氫綋鑺傜偣璐ㄩ噺鍒嗚В =======
-        let w1 = p.inv_mass;
-        let w2 = other.inv_mass;
+        let w1 = abs(p.inv_mass);
+        let w2 = abs(other.inv_mass);
         let w_sum = w1 + w2;
 
         // 濡傛灉涓ょ偣閮芥槸缁濆鍥哄畾鐨勯拤瀛愶紝璺宠繃绾︽潫绾犳
@@ -309,7 +328,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         let vn = dot(rel_vel, n);
         // 璐ㄩ噺鍔犳潈闃诲凹锛歸1/w_sum 淇濊瘉杞荤矑瀛愭壙鎷呭ぇ閮ㄥ垎閫熷害鍙樺寲锛岄噸绮掑瓙鍑犱箮涓嶅姩
         let w_ratio_link = w1 / w_sum;
-        // 0.05锛氬嵆浣?6 鏍硅繛绾垮彔鍔狅紙6脳0.05=0.3锛夛紝鎬婚樆灏间篃涓嶄細瓒呮爣瀵艰嚧鍙嶅悜鐖嗙偢
+        // 0.05锛氬嵆浣?6 鏍硅繛绾垮彔鍔狅紙6脳0.05=0.3锛矗鎬婚樆灏间篃涓嶄細瓒呮爣瀵艰嚧鍙嶅悜鐖嗙偢
         vel_impulse -= n * (vn * 0.05 * w_ratio_link * 2.0);
         // 寮圭哀鍙楀姏浜х儹锛堝舰鍙樻懇鎿︾儹锛?
         accumulated_heat += abs(vn) * 6.0 * w_ratio_link;
@@ -318,7 +337,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
     // ===== STEP 2锛氱┖闂撮偦杩戠鎾炰笌鍔ㄦ€侀摼鎺?=====
     var existing_links = count_links(&p);
 
-    // 銆愬鎻愬睘鎬ц绠椼€戞彁鏃╁皢鏈矑瀛愮殑鑶ㄨ儉涓庤绠楅瀛?
+    // 銆愬鎻愬睘鎬ц绠椼€戞彁鏃╁皢鏈矑瀛愮殑鑶ㄨ儉涓庤绠慹棰婞瀛?
     let mult1 = get_radius_mult(p.mat_type, p.temperature);
     let half_conn_p = decay * m1.conn_dist * mult1 * 0.5;
 
@@ -362,8 +381,9 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                         // 纰版挒鎺掓枼
                         if (dist < conn && dist > 0.00001 && !already) {
-                            let w1 = select(p.inv_mass, 0.5, p.grav_scale < -0.001);
-                            let w2 = select(other.inv_mass, 0.5, other.grav_scale < -0.001);
+                            let w1 = select(abs(p.inv_mass), 0.5, is_semi_fixed);
+                            let other_is_semi = (other.mat_type & 0x20000000u) != 0u;
+                            let w2 = select(abs(other.inv_mass), 0.5, other_is_semi);
                             let w_sum = w1 + w2;
                             if (w_sum > 0.00001) {
                                 let w_ratio = w1 / w_sum;
@@ -435,17 +455,25 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
                         }
                         } // allow_dynamic_link
 
-                        // 电荷传导
+                        // 电荷与热传导
                         if (dist < decay * 2.0) {
                             spread_charge += other.charge;
                             spread_count += 1.0;
+                            
+                            let k1 = m1.heat_conduction;
+                            let k2 = params.materials[other.mat_type & 0xFFu].heat_conduction;
+                            // 极大地缩小传热系数，防止显式积分导致数值爆炸
+                            let heat_flow = (k1 + k2) * 0.001 * (other.temperature - p.temperature);
+                            accumulated_conduction += heat_flow;
                         }
 
                         // 表面张力（配对引力）
-                        if (params.allow_surface_tension != 0u && m1.surface_tension > 0.0 && dist > conn && dist < conn * 2.5) {
-                            if (p.mat_type == other.mat_type) {
-                                let w1 = select(p.inv_mass, 0.5, p.grav_scale < -0.001);
-                                let w2 = select(other.inv_mass, 0.5, other.grav_scale < -0.001);
+                        let is_dragged = ((p.mat_type | other.mat_type) & 0x80000000u) != 0u;
+                        if (!is_dragged && params.allow_surface_tension != 0u && m1.surface_tension > 0.0 && dist > conn && dist < conn * 2.5) {
+                            if ((p.mat_type & 0xFFu) == (other.mat_type & 0xFFu)) {
+                                let w1 = select(abs(p.inv_mass), 0.5, is_semi_fixed);
+                                let other_is_semi = (other.mat_type & 0x20000000u) != 0u;
+                                let w2 = select(abs(other.inv_mass), 0.5, other_is_semi);
                                 let w_sum = w1 + w2;
                                 if (w_sum > 0.00001) {
                                     let w_ratio = w1 / w_sum;
@@ -477,11 +505,15 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
     // 基础阻尼系数已调小，确保即使 6 连接全叠加也不会超过 100%
     p.vel += vel_impulse;
     if (accumulated_heat > 0.0) {
-        if (p.inv_mass == 0.0 || p.grav_scale < -0.0001) {
+        if (abs(p.inv_mass) < 0.001 || is_semi_fixed) {
             accumulated_heat = accumulated_heat / 20.0;
         }
-        p.temperature += accumulated_heat;
+        p.temperature += accumulated_heat / heat_cap;
     }
+    p.temperature += (accumulated_conduction * dt * 60.0) / heat_cap;
+    
+    // 绝对温度安全钳制：防止任何异常爆炸导致 NaN
+    p.temperature = clamp(p.temperature, -273.15, 100000.0);
 
 
 
@@ -505,7 +537,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         let center = vec2<f32>(params.mouse_x, params.mouse_y);
         let to_mouse = center - p.pos;
         let r = length(to_mouse);
-        if (r < params.grab_radius && p.inv_mass > 0.001) {
+        if (r < params.grab_radius && abs(p.inv_mass) > 0.001) {
             p.mat_type |= 0x80000000u;
             if (params.drag_mode == 10u) {
                 // 鐐瑰紡鎷栨嫿闇€閫氳繃瑙掑瓧娈典复鏃朵繚瀛樺垵濮嬬浉瀵硅窛绂?
@@ -520,7 +552,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
             pos_correction = vec2<f32>(0.0);
         }
     } else if (params.drag_mode == 8u) {
-        // 寮圭哀鎷栨嫿 Hold: 缂撳姩宸插湪 CPU 鐨勮櫄鎷熷厜鏍ltr涓鐞嗭紝shader 绔洿鎺ョ粷瀵硅窡鎵?
+        // 寮圭哀鎷栨嫿 Hold: 缂撳姩宸插湪 CPU 鐨勮櫄鎷熷厜鏍ltr涓傚鐞嗭紝shader 绔洿鎺ョ粷瀵硅窡鎵?
         if ((p.mat_type & 0x80000000u) != 0u) {
             let dx = vec2<f32>(params.mouse_vx, params.mouse_vy);
             p.vel = dx / dt;
@@ -551,7 +583,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
             // 涓嶈娓呯┖ pos_correction! 鍏佽 PBD 寮圭哀鍐呴儴缁撴瀯鍙楀姏褰㈠彉鍙戠敓鐗╃悊鍙嶅簲
         }
     } else if (params.drag_mode == 4u || params.drag_mode == 9u || params.drag_mode == 12u) {
-        // Grab Release锛堝叡鐢級: 瑙ｉ櫎鏍囪
+        // Grab Release锛堝叡鐢긔: 瑙ｉ櫎鏍囪
         if ((p.mat_type & 0x80000000u) != 0u) {
             p.mat_type &= 0x7FFFFFFFu;
         }
@@ -577,7 +609,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     } else if (params.drag_mode == 14u) {
         // 娓呯┖闈為拤鍥虹矑瀛?
-        if (p.inv_mass > 0.0) {
+        if (abs(p.inv_mass) > 0.001) {
             p.mat_type |= 0x40000000u;
             p.pos = vec2<f32>(20000.0, 20000.0);
             p.inv_mass = 0.0;
@@ -594,7 +626,16 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             if (params.mod_node_inv_mass > -1.5) {
                 p.inv_mass = params.mod_node_inv_mass;
-                p.grav_scale = params.mod_node_grav;
+                if (params.mod_node_grav < -0.5) { // SemiFixed (mod_node_grav == -1.0)
+                    p.mat_type |= 0x20000000u;
+                    p.grav_scale = -1.0;
+                } else if (params.mod_node_grav < 0.001 && params.mod_node_grav > -0.001) { // ZeroGravity (mod_node_grav == 0.0)
+                    p.mat_type &= 0xDFFFFFFFu; // 清除 0x20000000u
+                    p.grav_scale = 0.0;
+                } else {
+                    p.mat_type &= 0xDFFFFFFFu; // 清除 0x20000000u
+                    p.grav_scale = params.mod_node_grav;
+                }
             }
             if (params.mod_temp > -0.5) {
                 p.temperature = params.mod_temp;
@@ -616,10 +657,10 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (speed_loss > 0.0) {
         // 甯歌闃诲凹鐢熺儹绯绘暟
         var heat = speed_loss * 1000.0; 
-        if (p.inv_mass == 0.0 || p.grav_scale < -0.0001) {
+        if (abs(p.inv_mass) < 0.001 || is_semi_fixed) {
             heat = heat / 20.0;
         }
-        p.temperature += heat;
+        p.temperature += heat / heat_cap;
     }
 
     // 婕傛诞闃诲凹浣擄細grav_scale = -N锛孨 涓烘€绘姷鎶楅绠楋紙鏃犱笂闄愶級
@@ -629,25 +670,25 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         let spd = length(p.vel);
         if (spd > 0.0) {
             // 鏈抚閫熷害浜х敓鐨勭瓑鏁堝啿閲忥紙绠€鍖栦负 speed * dt / inv_mass锛?
-            let impulse_this_frame = spd / max(p.inv_mass, 0.001);
+            let impulse_this_frame = spd / max(abs(p.inv_mass), 0.001);
             if (impulse_this_frame <= N) {
                 // N 瓒冲锛氬畬鍏ㄦ姷娑堥€熷害锛屾墸闄ゆ秷鑰?
                 p.grav_scale = -(N - impulse_this_frame);
                 p.vel = vec2<f32>(0.0);
-                p.temperature += (spd * 6000.0) / 20.0; // 寮烘姷鎶楃敓鏇村鐑紙闄や互20锛?
+                p.temperature += ((spd * 6000.0) / 20.0) / heat_cap; // 寮烘姷鎶楃敓鏇村鐑紙闄や互20锛?
             } else {
                 // N 涓嶈冻锛氭寜姣斾緥閮ㄥ垎琛板噺锛屽墿浣欓绠楀綊闆?
                 let absorb_ratio = N / impulse_this_frame; // 0~1
                 p.vel *= (1.0 - absorb_ratio);
                 p.grav_scale = 0.0; // 棰勭畻鑰楀敖锛屼箣鍚庤嚜鐢辨紓娴?
-                p.temperature += ((spd * absorb_ratio) * 6000.0) / 20.0; // (闄や互20)
+                p.temperature += (((spd * absorb_ratio) * 6000.0) / 20.0) / heat_cap; // (闄や互20)
             }
         }
     }
 
     // 浣嶇疆绉垎 (w=0 缁濆鏃犲姩閲忥紝鏃犺鏄笉鏄?SemiFixed 閮藉彧鏈夎鍔ㄦ帹鎸わ紝娌℃湁鑷彂閫熷害绉垎锛?
     // 銆愭紡娲?淇銆慘ahan Summation 楂樼簿搴︿綅缃Н鍒細鎹曡幏寰背绾ф畫鐣欓€熷害绱Н
-    if (p.inv_mass > 0.001 || (p.mat_type & 0x80000000u) != 0u) {
+    if (abs(p.inv_mass) > 0.001 || (p.mat_type & 0x80000000u) != 0u) {
         var res = pos_residue[i];
         let delta = p.vel * dt + res;
         let old_pos = p.pos;
@@ -674,7 +715,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (coll_len > max_corr) { pos_corr_collision = pos_corr_collision / coll_len * max_corr; }
     
     // 濡傛灉鏄粷瀵瑰畾閽?(涓斾笉鏄?SemiFixed) 锛屾柀鏂竴鍒囩墿鐞嗕慨姝ｄ綅绉伙紒
-    if (p.inv_mass < 0.001 && p.grav_scale >= -0.5) {
+    if (abs(p.inv_mass) < 0.001 && p.grav_scale >= -0.5) {
         pos_correction = vec2<f32>(0.0);
         pos_corr_collision = vec2<f32>(0.0);
     }
@@ -690,7 +731,7 @@ fn compute_physics(@builtin(global_invocation_id) gid: vec3<u32>) {
         p.vel += (pos_correction / dt) * feedback_damping;
     }
 
-    if (p.inv_mass > 0.001) {
+    if (abs(p.inv_mass) > 0.001) {
 
         // 鏈€缁堥€熷害闄愬箙锛堝厹搴曞畨鍏ㄧ綉锛?
         let spd = length(p.vel);
@@ -837,9 +878,35 @@ fn compute_photon_physics(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 // Record this hit to prevent re-interaction next substep
                 ph.last_hit_id = hit_idx;
 
+                // Check spectrum reflection: does this photon's wavelength match the material's reflectance spectrum?
+                var reflects = true;
+                if (m.ref_spectra[0].x < m.ref_spectra[0].y) {
+                    reflects = false;
+                    let w = ph.wavelength;
+                    // Check range 1
+                    if (m.ref_spectra[0].x < m.ref_spectra[0].y && w >= m.ref_spectra[0].x && w <= m.ref_spectra[0].y) {
+                        reflects = true;
+                    }
+                    // Check range 2
+                    else if (m.ref_spectra[0].z < m.ref_spectra[0].w && w >= m.ref_spectra[0].z && w <= m.ref_spectra[0].w) {
+                        reflects = true;
+                    }
+                    // Check range 3
+                    else if (m.ref_spectra[1].x < m.ref_spectra[1].y && w >= m.ref_spectra[1].x && w <= m.ref_spectra[1].y) {
+                        reflects = true;
+                    }
+                    // Check range 4
+                    else if (m.ref_spectra[1].z < m.ref_spectra[1].w && w >= m.ref_spectra[1].z && w <= m.ref_spectra[1].w) {
+                        reflects = true;
+                    }
+                }
+
                 // Step 1: Transmission check (probability of passing through)
-                if (photon_rand(&seed) < m.light_transmission) {
-                    let eta = 1.0 / max(1.0, m.refractive_index);
+                if (!reflects && photon_rand(&seed) < m.light_transmission) {
+                    let base_ior = max(1.0, m.refractive_index);
+                    let wl_mod = (550.0 - ph.wavelength) / 550.0 * 0.1; 
+                    let final_ior = max(1.0, base_ior + wl_mod);
+                    let eta = 1.0 / final_ior;
                     let refracted = refract(ph.vel, normal, eta);
                     if (length(refracted) > 0.001) {
                         ph.vel = normalize(refracted);
@@ -848,8 +915,8 @@ fn compute_photon_physics(@builtin(global_invocation_id) global_id: vec3<u32>) {
                     ph.path[ph.path_idx % 16u] = ph.pos; // Record bend
                     ph.path_idx += 1u;
                 }
-                // Step 2: Reflection check (probabilistic)
-                else if (photon_rand(&seed) < m.light_reflectivity) {
+                // Step 2: Reflection check (probabilistic, gated by spectrum match)
+                else if (reflects && photon_rand(&seed) < m.light_reflectivity) {
                     ph.vel = reflect(ph.vel, normal);
                     ph.pos = hit_pos + normal * grid_cell_size * 0.3;
                     ph.path[ph.path_idx % 16u] = ph.pos; // Record bounce
@@ -886,6 +953,10 @@ fn compute_photon_physics(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if (ph.energy < 0.00001 && ph.lifetime > 0.0) {
         ph.lifetime = 0.0;
         ph.energy = 0.0;
+    }
+
+    if (ph.lifetime > 0.0 && ph.energy > 0.00001) {
+        atomicAdd(&stats_buf[0], 1u);
     }
 
     photons[i] = ph;

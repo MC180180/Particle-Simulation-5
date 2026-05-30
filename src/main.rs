@@ -34,7 +34,8 @@ struct Photon {
     speed: f32,
     last_hit_id: i32,
     path_idx: u32,
-    _pad: [f32; 2],
+    wavelength: f32,
+    _pad2: f32,
     path: [[f32; 2]; 16],
 }
 
@@ -52,8 +53,56 @@ struct Particle {
     grav_scale: f32, // 1.0 涓哄彈閲嶅姏锛?.0 为不受重力（失重态）
 }
 
+struct ParticleGrid {
+    cell_size: f32,
+    grid: std::collections::HashMap<(i32, i32), Vec<usize>>,
+}
+impl ParticleGrid {
+    fn new(particles: &[Particle], cell_size: f32) -> Self {
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
+        for (i, p) in particles.iter().enumerate() {
+            let cx = (p.pos[0] / cell_size).floor() as i32;
+            let cy = (p.pos[1] / cell_size).floor() as i32;
+            grid.entry((cx, cy)).or_default().push(i);
+        }
+        Self { cell_size, grid }
+    }
+    fn find_closest(&self, px: f32, py: f32, max_dist: f32, particles: &[Particle]) -> Option<usize> {
+        let cx = (px / self.cell_size).floor() as i32;
+        let cy = (py / self.cell_size).floor() as i32;
+        let mut min_d = max_dist;
+        let mut closest = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(list) = self.grid.get(&(cx + dx, cy + dy)) {
+                    for &idx in list {
+                        let p = &particles[idx];
+                        let d = f32::hypot(p.pos[0] - px, p.pos[1] - py);
+                        if d < min_d {
+                            min_d = d;
+                            closest = Some(idx);
+                        }
+                    }
+                }
+            }
+        }
+        closest
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum LogicEvent {
+    Spawn { mat_type: u32, pos: [f32; 2] },
+    Mutate { id: u32, new_mat: u32 },
+    BreakLinks { id: u32 },
+    ChangeTemp { id: u32, new_temp: f32 },
+    ChangeCharge { id: u32, new_charge: f32 },
+    Delete { id: u32 },
+    EmitPhoton { pos: [f32; 2], angle: f32, params: PhotonEmitParams },
+}
+
 #[derive(PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
-enum SpawnNodeMode {
+pub enum SpawnNodeMode {
     Normal,
     ZeroGravity,
     SemiFixed,
@@ -69,10 +118,166 @@ fn write_particles_to_gpu(
     queue.write_buffer(particle_buf, offset_particles * std::mem::size_of::<Particle>() as u64, bytemuck::cast_slice(new_particles));
 }
 
+fn wl_to_color(wl: f32) -> egui::Color32 {
+    let r;
+    let g;
+    let b;
+    if wl >= 380.0 && wl < 440.0 {
+        r = -(wl - 440.0) / (440.0 - 380.0);
+        g = 0.0;
+        b = 1.0;
+    } else if wl >= 440.0 && wl < 490.0 {
+        r = 0.0;
+        g = (wl - 440.0) / (490.0 - 440.0);
+        b = 1.0;
+    } else if wl >= 490.0 && wl < 510.0 {
+        r = 0.0;
+        g = 1.0;
+        b = -(wl - 510.0) / (510.0 - 490.0);
+    } else if wl >= 510.0 && wl < 580.0 {
+        r = (wl - 510.0) / (580.0 - 510.0);
+        g = 1.0;
+        b = 0.0;
+    } else if wl >= 580.0 && wl < 645.0 {
+        r = 1.0;
+        g = -(wl - 645.0) / (645.0 - 580.0);
+        b = 0.0;
+    } else if wl >= 645.0 && wl <= 780.0 {
+        r = 1.0;
+        g = 0.0;
+        b = 0.0;
+    } else if wl < 380.0 {
+        r = 0.5; g = 0.0; b = 1.0;
+    } else {
+        r = 1.0; g = 0.0; b = 0.0;
+    }
+    
+    let mut a = 1.0;
+    if wl < 380.0 {
+        a = 1.0 - (380.0 - wl) / 60.0;
+    } else if wl > 780.0 {
+        a = 1.0 - (wl - 780.0) / 60.0;
+    }
+    a = a.clamp(0.0, 1.0);
+    
+    egui::Color32::from_rgba_premultiplied(
+        (r * a * 255.0) as u8,
+        (g * a * 255.0) as u8,
+        (b * a * 255.0) as u8,
+        255
+    )
+}
+
+fn draw_spectrum_bar(ui: &mut egui::Ui, ranges: Option<&Vec<(f32, f32)>>) {
+    let height = 12.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(145.0), height), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let mut mesh = egui::Mesh::default();
+        let segments = 370;
+        let global_min = 380.0;
+        let global_max = 750.0;
+        for i in 0..segments {
+            let t1 = i as f32 / segments as f32;
+            let t2 = (i + 1) as f32 / segments as f32;
+            let wl1 = global_min + t1 * (global_max - global_min);
+            let wl2 = global_min + t2 * (global_max - global_min);
+            
+            let mut active = true;
+            if let Some(rs) = ranges {
+                if !rs.is_empty() {
+                    active = false;
+                    for &(rmin, rmax) in rs.iter() {
+                        if wl1 <= rmax && wl2 >= rmin {
+                            active = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            let mut c1 = wl_to_color(wl1);
+            let mut c2 = wl_to_color(wl2);
+            
+            if !active {
+                c1 = c1.linear_multiply(0.01);
+                c2 = c2.linear_multiply(0.01);
+            }
+            
+            let x1 = rect.min.x + t1 * rect.width();
+            let x2 = rect.min.x + t2 * rect.width();
+            
+            let idx = mesh.vertices.len() as u32;
+            mesh.vertices.push(egui::epaint::Vertex { pos: egui::pos2(x1, rect.min.y), uv: egui::pos2(0.0, 0.0), color: c1 });
+            mesh.vertices.push(egui::epaint::Vertex { pos: egui::pos2(x1, rect.max.y), uv: egui::pos2(0.0, 0.0), color: c1 });
+            mesh.vertices.push(egui::epaint::Vertex { pos: egui::pos2(x2, rect.max.y), uv: egui::pos2(0.0, 0.0), color: c2 });
+            mesh.vertices.push(egui::epaint::Vertex { pos: egui::pos2(x2, rect.min.y), uv: egui::pos2(0.0, 0.0), color: c2 });
+            
+            mesh.indices.push(idx);
+            mesh.indices.push(idx + 1);
+            mesh.indices.push(idx + 2);
+            mesh.indices.push(idx);
+            mesh.indices.push(idx + 2);
+            mesh.indices.push(idx + 3);
+        }
+        ui.painter().add(egui::Shape::mesh(mesh));
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+pub struct PhotonEmitParams {
+    pub energy: f32,
+    pub count: u32,
+    pub lifetime: f32,
+    pub speed: f32,
+    pub wavelength_ranges: Vec<(f32, f32)>,
+    #[serde(default)]
+    pub force_spawn: bool,
+}
+
+impl Default for PhotonEmitParams {
+    fn default() -> Self {
+        Self {
+            energy: 0.1,
+            count: 1,
+            lifetime: 10.0,
+            speed: 5.0,
+            wavelength_ranges: vec![(400.0, 700.0)],
+            force_spawn: false,
+        }
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct LogicRule {
+    pub name: String,
+    pub is_active: bool,
+    // Triggers (None means not checking this condition)
+    pub trigger_temp: Option<(f32, f32)>, // min, max
+    pub trigger_charge: Option<(f32, f32)>,
+    pub trigger_light: Option<(f32, f32)>,
+    pub trigger_links: Option<(u32, u32)>,
+    pub trigger_pull: Option<(f32, f32)>,
+    pub trigger_push: Option<(f32, f32)>,
+    pub trigger_mat_links: Option<(u32, u32, u32, f32)>, // mat_type, count_min, count_max, prob
+    
+    // Effects
+    pub effect_temp_add: Option<f32>,
+    pub effect_charge_add: Option<f32>,
+    pub effect_light_add: Option<f32>,
+    pub effect_break_links: bool,
+    pub effect_delete_self: bool,
+    pub effect_mutate: Option<u32>, // new mat_type
+    pub effect_spawn: Option<(u32, u32)>, // mat_type, count
+    pub effect_consume_spawn: Option<(u32, u32, u32, u32)>, // consume_mat, consume_count, spawn_mat, spawn_count
+    pub effect_emit_photon: Option<PhotonEmitParams>,
+}
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct MaterialDef {
     pub name: String,
+    #[serde(default)]
+    pub group: String,
     pub color: [u8; 4],
     #[serde(default)]
     pub color2: Option<[u8; 4]>,
@@ -95,7 +300,15 @@ pub struct MaterialDef {
     #[serde(default)]
     pub light_reflectivity: Option<f32>, // 光反射率 (0-1)
     #[serde(default)]
-    pub refractive_index: Option<f32>, // 光折射率 (0-100)
+    pub refractive_index: Option<f32>,
+    #[serde(default)]
+    pub heat_conduction: Option<f32>,
+    #[serde(default)]
+    pub specific_heat_capacity: Option<f32>, // 光折射率 (0-100)
+    #[serde(default)]
+    pub reflectance_spectrum: Option<Vec<(f32, f32)>>,
+    #[serde(default)]
+    pub logic_rules: Vec<LogicRule>,
 }
 
 #[repr(C)]
@@ -113,8 +326,9 @@ pub struct MaterialPropsWGSL {
     pub light_transmission: f32,
     pub light_reflectivity: f32,
     pub refractive_index: f32,
-    pub _pad1: f32,
-    pub _pad2: f32,
+    pub heat_conduction: f32,
+    pub heat_capacity: f32,
+    pub ref_spectra: [f32; 8],
 }
 
 
@@ -180,9 +394,22 @@ enum LeftClickMode {
 
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 enum WorldSourceType {
-    Light { rate_per_sec: f32, delay_accum: f32, angle: f32, speed: f32, energy: f32, lifetime: f32 },
+    Light { rate_per_sec: f32, delay_accum: f32, angle: f32, dir_angle: f32, speed: f32, energy: f32, lifetime: f32, min_wavelength: f32, max_wavelength: f32 },
     Particle { mat: u32, node_mode: SpawnNodeMode, rate_per_sec: f32, delay_accum: f32, angle: f32, speed: f32 },
     Gravity { force: f32 }, // 正代表吸引，负代表排斥
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub enum SourcePresetConfig {
+    Light { rate: f32, speed: f32, energy: f32, lifetime: f32, min_wl: f32, max_wl: f32, angle: f32, radius: f32 },
+    Particle { mat: usize, node: SpawnNodeMode, rate: f32, speed: f32, angle: f32, radius: f32 },
+    Gravity { force: f32, radius: f32 }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SourcePreset {
+    pub name: String,
+    pub config: SourcePresetConfig,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -209,6 +436,50 @@ fn draw_hex(painter: &egui::Painter, center: egui::Pos2, radius: f32, stroke: eg
     for i in 0..6 {
         let a = (i as f32) * std::f32::consts::PI / 3.0 + std::f32::consts::PI / 6.0;
         pts.push(center + egui::vec2(a.cos() * radius, a.sin() * radius));
+    }
+    if let Some(c) = fill {
+        painter.add(egui::Shape::convex_polygon(pts.clone(), c, stroke));
+    } else {
+        pts.push(pts[0]);
+        painter.add(egui::Shape::line(pts, stroke));
+    }
+}
+
+fn wide_icon_btn(ui: &mut egui::Ui, width: f32, tooltip: &str, draw_icon: impl Fn(&egui::Ui, egui::Rect, egui::Color32)) -> egui::Response {
+    let size = egui::vec2(width, 28.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let bg_fill = if response.is_pointer_button_down_on() { ui.visuals().widgets.active.bg_fill } else if response.hovered() { ui.visuals().widgets.hovered.bg_fill } else { ui.visuals().widgets.inactive.bg_fill };
+    let icon_color = if response.is_pointer_button_down_on() { ui.visuals().widgets.active.text_color() } else if response.hovered() { ui.visuals().widgets.hovered.text_color() } else { ui.visuals().widgets.inactive.text_color() };
+    ui.painter().rect_filled(rect, 4.0, bg_fill);
+    draw_icon(ui, rect, icon_color);
+    response.on_hover_text(tooltip)
+}
+
+fn draw_trash_can(painter: &egui::Painter, center: egui::Pos2, color: egui::Color32, scale: f32) {
+    let stroke = egui::Stroke::new(1.5, color);
+    let w = 4.0 * scale; let h = 5.0 * scale;
+    painter.line_segment([center + egui::vec2(-w-1.0*scale, -h), center + egui::vec2(w+1.0*scale, -h)], stroke);
+    painter.line_segment([center + egui::vec2(-w*0.5, -h), center + egui::vec2(-w*0.5, -h-2.0*scale)], stroke);
+    painter.line_segment([center + egui::vec2(w*0.5, -h), center + egui::vec2(w*0.5, -h-2.0*scale)], stroke);
+    painter.line_segment([center + egui::vec2(-w*0.5, -h-2.0*scale), center + egui::vec2(w*0.5, -h-2.0*scale)], stroke);
+    let pts = vec![
+        center + egui::vec2(-w, -h),
+        center + egui::vec2(-w*0.8, h),
+        center + egui::vec2(w*0.8, h),
+        center + egui::vec2(w, -h)
+    ];
+    painter.add(egui::Shape::line(pts, stroke));
+    painter.line_segment([center + egui::vec2(-w*0.4, -h+2.0*scale), center + egui::vec2(-w*0.3, h-2.0*scale)], stroke);
+    painter.line_segment([center + egui::vec2(w*0.4, -h+2.0*scale), center + egui::vec2(w*0.3, h-2.0*scale)], stroke);
+    painter.line_segment([center + egui::vec2(0.0, -h+2.0*scale), center + egui::vec2(0.0, h-2.0*scale)], stroke);
+}
+
+fn draw_4star(painter: &egui::Painter, center: egui::Pos2, radius: f32, stroke: egui::Stroke, fill: Option<egui::Color32>) {
+    let mut pts = Vec::with_capacity(8);
+    for i in 0..8 {
+        let a = (i as f32) * std::f32::consts::PI / 4.0;
+        let r = if i % 2 == 0 { radius } else { radius * 0.4 };
+        pts.push(center + egui::vec2(a.cos() * r, a.sin() * r));
     }
     if let Some(c) = fill {
         painter.add(egui::Shape::convex_polygon(pts.clone(), c, stroke));
@@ -304,7 +575,7 @@ struct SimParams {
     _pad_b: u32,
     _pad_c: u32,
     gravity_sources: [f32; 32], // [x, y, radius, force] * 8
-    materials: [MaterialPropsWGSL; 16],
+    pub materials: [MaterialPropsWGSL; 64],
 }
 
 fn spawn_patch(
@@ -319,6 +590,7 @@ fn spawn_patch(
     inv_mass: f32,
     grav_scale: f32,
     mult: f32,
+    replace_state: &mut Option<(Vec<Particle>, ParticleGrid)>,
 ) {
     let rest_dist = 0.0112 * mult;
     let dy = rest_dist * 0.8660254; // sin(60)
@@ -329,6 +601,7 @@ fn spawn_patch(
 
     let start_idx = *active_particles;
     let mut new_pts = Vec::new();
+    let mut replaced_indices = Vec::new();
 
     for iy in -n_y..=n_y {
         for ix in -n_x..=n_x {
@@ -337,46 +610,86 @@ fn spawn_patch(
             let py = center[1] + (iy as f32) * dy;
 
             if f32::hypot(px - center[0], py - center[1]) <= radius {
-                let current_idx = start_idx + new_pts.len() as u32;
-                if current_idx >= num_particles {
-                    break;
+                let mut replaced = false;
+                if let Some((ref mut eps, ref grid)) = replace_state {
+                    if let Some(idx) = grid.find_closest(px, py, dx * 0.6, eps) {
+                        eps[idx].mat_type = mat as u32;
+                        eps[idx].inv_mass = inv_mass;
+                        eps[idx].grav_scale = grav_scale;
+                        eps[idx].vel = [0.0, 0.0];
+                        eps[idx].charge = 0.0;
+                        eps[idx].temperature = 0.0;
+                        replaced_indices.push(idx);
+                        replaced = true;
+                    }
                 }
-                new_pts.push(Particle {
-                    pos: [px, py],
-                    vel: [0.0, 0.0],
-                    links: [-1; 6],
-                    charge: 0.0,
-                    angle: 0.0,
-                    temperature: 0.0,
-                    mat_type: mat as u32,
-                    inv_mass,
-                    grav_scale,
-                });
+                
+                if !replaced {
+                    let current_idx = start_idx + new_pts.len() as u32;
+                    if current_idx >= num_particles {
+                        break;
+                    }
+                    new_pts.push(Particle {
+                        pos: [px, py],
+                        vel: [0.0, 0.0],
+                        links: [-1; 6],
+                        charge: 0.0,
+                        angle: 0.0,
+                        temperature: 0.0,
+                        mat_type: mat as u32,
+                        inv_mass,
+                        grav_scale,
+                    });
+                }
             }
         }
     }
 
     if pre_link {
-        let pts_clone = new_pts.clone();
-        for i in 0..new_pts.len() {
-            let mut pt_links = [-1; 6];
-            let mut count = 0;
-            // 鎸夌┖闂磋窛绂诲鎵剧湡瀹炵殑閭诲眳
-            for j in 0..pts_clone.len() {
-                if i == j {
-                    continue;
-                }
-                let dx_diff = new_pts[i].pos[0] - pts_clone[j].pos[0];
-                let dy_diff = new_pts[i].pos[1] - pts_clone[j].pos[1];
-                let dist = f32::hypot(dx_diff, dy_diff);
-                if dist < rest_dist * 1.05 {
-                    if count < 6 {
-                        pt_links[count] = (start_idx + j as u32) as i32;
-                        count += 1;
+        let mut stamp_info = Vec::new();
+        if let Some((ref eps, _)) = replace_state {
+            for &idx in &replaced_indices {
+                stamp_info.push((idx as u32, eps[idx].pos));
+            }
+        }
+        for (i, p) in new_pts.iter().enumerate() {
+            stamp_info.push((start_idx + i as u32, p.pos));
+        }
+
+        for i in 0..stamp_info.len() {
+            let (g_idx1, pos1) = stamp_info[i];
+            for j in 0..stamp_info.len() {
+                if i == j { continue; }
+                let (g_idx2, pos2) = stamp_info[j];
+                let dist = f32::hypot(pos1[0] - pos2[0], pos1[1] - pos2[1]);
+                if dist > 0.001 && dist < rest_dist * 1.05 {
+                    if i < replaced_indices.len() {
+                        if let Some((ref mut eps, _)) = replace_state {
+                            let p = &mut eps[g_idx1 as usize];
+                            if !p.links.contains(&(g_idx2 as i32)) {
+                                if let Some(empty) = p.links.iter_mut().find(|l| **l == -1) {
+                                    *empty = g_idx2 as i32;
+                                }
+                            }
+                        }
+                    } else {
+                        let local_idx = i - replaced_indices.len();
+                        let p = &mut new_pts[local_idx];
+                        if !p.links.contains(&(g_idx2 as i32)) {
+                            if let Some(empty) = p.links.iter_mut().find(|l| **l == -1) {
+                                *empty = g_idx2 as i32;
+                            }
+                        }
                     }
                 }
             }
-            new_pts[i].links = pt_links;
+        }
+    }
+
+    if let Some((ref eps, _)) = replace_state {
+        for &idx in &replaced_indices {
+            let offset = idx as u64 * std::mem::size_of::<Particle>() as u64;
+            queue.write_buffer(particle_buf, offset, bytemuck::bytes_of(&eps[idx]));
         }
     }
 
@@ -398,6 +711,7 @@ fn spawn_rect(
     inv_mass: f32,
     grav_scale: f32,
     mult: f32,
+    replace_state: &mut Option<(Vec<Particle>, ParticleGrid)>,
 ) {
     let rest_dist = 0.0112 * mult;
     let dy = rest_dist * 0.8660254; // sin(60)
@@ -415,6 +729,7 @@ fn spawn_rect(
 
     let start_idx = *active_particles;
     let mut new_pts = Vec::new();
+    let mut replaced_indices = Vec::new();
 
     for iy in min_row..=max_row {
         for ix in min_col..=max_col {
@@ -423,47 +738,87 @@ fn spawn_rect(
             let py = (iy as f32) * dy;
 
             if px >= min_x && px <= max_x && py >= min_y && py <= max_y {
-                let current_idx = start_idx + new_pts.len() as u32;
-                if current_idx >= num_particles {
-                    break;
+                let mut replaced = false;
+                if let Some((ref mut eps, ref grid)) = replace_state {
+                    if let Some(idx) = grid.find_closest(px, py, dx * 0.6, eps) {
+                        eps[idx].mat_type = mat as u32;
+                        eps[idx].inv_mass = inv_mass;
+                        eps[idx].grav_scale = grav_scale;
+                        eps[idx].vel = [0.0, 0.0];
+                        eps[idx].charge = 0.0;
+                        eps[idx].temperature = 0.0;
+                        replaced_indices.push(idx);
+                        replaced = true;
+                    }
                 }
+                
+                if !replaced {
+                    let current_idx = start_idx + new_pts.len() as u32;
+                    if current_idx >= num_particles {
+                        break;
+                    }
 
-                new_pts.push(Particle {
-                    pos: [px, py],
-                    vel: [0.0, 0.0],
-                    links: [-1; 6],
-                    charge: 0.0,
-                    angle: 0.0,
-                    temperature: 0.0,
-                    mat_type: mat as u32,
-                    inv_mass,
-                    grav_scale,
-                });
+                    new_pts.push(Particle {
+                        pos: [px, py],
+                        vel: [0.0, 0.0],
+                        links: [-1; 6],
+                        charge: 0.0,
+                        angle: 0.0,
+                        temperature: 0.0,
+                        mat_type: mat as u32,
+                        inv_mass,
+                        grav_scale,
+                    });
+                }
             }
         }
     }
 
     if pre_link {
-        let pts_clone = new_pts.clone();
-        for i in 0..new_pts.len() {
-            let mut pt_links = [-1; 6];
-            let mut count = 0;
-            // 鎸夌┖闂磋窛绂诲鎵剧湡瀹炵殑閭诲眳
-            for j in 0..pts_clone.len() {
-                if i == j {
-                    continue;
-                }
-                let dx_diff = new_pts[i].pos[0] - pts_clone[j].pos[0];
-                let dy_diff = new_pts[i].pos[1] - pts_clone[j].pos[1];
-                let dist = f32::hypot(dx_diff, dy_diff);
-                if dist < rest_dist * 1.05 {
-                    if count < 6 {
-                        pt_links[count] = (start_idx + j as u32) as i32;
-                        count += 1;
+        let mut stamp_info = Vec::new();
+        if let Some((ref eps, _)) = replace_state {
+            for &idx in &replaced_indices {
+                stamp_info.push((idx as u32, eps[idx].pos));
+            }
+        }
+        for (i, p) in new_pts.iter().enumerate() {
+            stamp_info.push((start_idx + i as u32, p.pos));
+        }
+
+        for i in 0..stamp_info.len() {
+            let (g_idx1, pos1) = stamp_info[i];
+            for j in 0..stamp_info.len() {
+                if i == j { continue; }
+                let (g_idx2, pos2) = stamp_info[j];
+                let dist = f32::hypot(pos1[0] - pos2[0], pos1[1] - pos2[1]);
+                if dist > 0.001 && dist < rest_dist * 1.05 {
+                    if i < replaced_indices.len() {
+                        if let Some((ref mut eps, _)) = replace_state {
+                            let p = &mut eps[g_idx1 as usize];
+                            if !p.links.contains(&(g_idx2 as i32)) {
+                                if let Some(empty) = p.links.iter_mut().find(|l| **l == -1) {
+                                    *empty = g_idx2 as i32;
+                                }
+                            }
+                        }
+                    } else {
+                        let local_idx = i - replaced_indices.len();
+                        let p = &mut new_pts[local_idx];
+                        if !p.links.contains(&(g_idx2 as i32)) {
+                            if let Some(empty) = p.links.iter_mut().find(|l| **l == -1) {
+                                *empty = g_idx2 as i32;
+                            }
+                        }
                     }
                 }
             }
-            new_pts[i].links = pt_links;
+        }
+    }
+
+    if let Some((ref eps, _)) = replace_state {
+        for &idx in &replaced_indices {
+            let offset = idx as u64 * std::mem::size_of::<Particle>() as u64;
+            queue.write_buffer(particle_buf, offset, bytemuck::bytes_of(&eps[idx]));
         }
     }
 
@@ -500,6 +855,197 @@ fn main() {
     }
 }
 
+fn render_inline_markdown(ui: &mut egui::Ui, text: &str) {
+    let mut job = egui::text::LayoutJob::default();
+    let default_color = ui.visuals().text_color();
+    
+    let mut chars = text.chars().peekable();
+    let mut current_text = String::new();
+    let mut is_bold = false;
+    let mut is_italic = false;
+    
+    let mut flush = |job: &mut egui::text::LayoutJob, text: &mut String, bold: bool, italic: bool| {
+        if !text.is_empty() {
+            let mut format = egui::text::TextFormat {
+                font_id: egui::FontId::proportional(14.0),
+                color: default_color,
+                ..Default::default()
+            };
+            if bold {
+                format.color = egui::Color32::from_rgb(255, 180, 100);
+            } else if italic {
+                format.color = egui::Color32::from_rgb(150, 200, 255);
+            }
+            job.append(&text, 0.0, format);
+            text.clear();
+        }
+    };
+
+    while let Some(c) = chars.next() {
+        if c == '*' {
+            if chars.peek() == Some(&'*') {
+                chars.next();
+                flush(&mut job, &mut current_text, is_bold, is_italic);
+                is_bold = !is_bold;
+            } else {
+                flush(&mut job, &mut current_text, is_bold, is_italic);
+                is_italic = !is_italic;
+            }
+        } else {
+            current_text.push(c);
+        }
+    }
+    flush(&mut job, &mut current_text, is_bold, is_italic);
+    ui.label(job);
+}
+
+fn render_markdown(ui: &mut egui::Ui, text: &str) {
+    ui.spacing_mut().item_spacing.y = 8.0;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+        if line.starts_with("# ") {
+            ui.heading(egui::RichText::new(&line[2..]).strong().size(22.0).color(egui::Color32::from_rgb(220, 220, 220)));
+            ui.separator();
+        } else if line.starts_with("## ") {
+            ui.heading(egui::RichText::new(&line[3..]).strong().size(18.0).color(egui::Color32::from_rgb(180, 200, 255)));
+            ui.add_space(4.0);
+        } else if line.starts_with("### ") {
+            ui.heading(egui::RichText::new(&line[4..]).strong().size(16.0).color(egui::Color32::from_rgb(200, 200, 200)));
+        } else if line.starts_with("- ") || line.starts_with("* ") {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(" • ").strong().color(egui::Color32::from_rgb(100, 150, 255)));
+                let text_line = &line[2..];
+                if text_line.starts_with("[ICON_") {
+                    let end_idx = text_line.find(']').unwrap_or(0);
+                    if end_idx > 0 {
+                        let icon_name = &text_line[6..end_idx];
+                        let rest = &text_line[end_idx+1..];
+                        
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        let c = rect.center();
+                        let color = egui::Color32::from_rgb(100, 180, 255);
+                        
+                        match icon_name {
+                            "DragForce" => {
+                                let mut pts = vec![];
+                                for i in 0..=12 {
+                                    let t = i as f32 / 12.0;
+                                    let x = rect.left() + t * rect.width();
+                                    let y = c.y + (t * std::f32::consts::PI * 4.0).sin() * 4.0;
+                                    pts.push(egui::pos2(x, y));
+                                }
+                                ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.5, color)));
+                            },
+                            "PointDrag" => {
+                                ui.painter().circle_stroke(c, 2.5, egui::Stroke::new(1.5, color));
+                                draw_arc(ui.painter(), c, 6.0, 0.5, 2.6, egui::Stroke::new(1.0, color));
+                                draw_arc(ui.painter(), c, 6.0, 3.6, 5.7, egui::Stroke::new(1.0, color));
+                                let p1 = c + egui::vec2(2.6f32.cos(), 2.6f32.sin()) * 6.0;
+                                ui.painter().circle_filled(p1, 1.0, color);
+                                let p2 = c + egui::vec2(5.7f32.cos(), 5.7f32.sin()) * 6.0;
+                                ui.painter().circle_filled(p2, 1.0, color);
+                            },
+                            "DragPosition" => {
+                                let r = 4.0;
+                                ui.painter().circle_stroke(c, r, egui::Stroke::new(1.5, color));
+                                ui.painter().line_segment([c - egui::vec2(r+2.0, 0.0), c + egui::vec2(r+2.0, 0.0)], egui::Stroke::new(1.5, color));
+                                ui.painter().line_segment([c - egui::vec2(0.0, r+2.0), c + egui::vec2(0.0, r+2.0)], egui::Stroke::new(1.5, color));
+                            },
+                            "ModifyArea" => {
+                                ui.painter().circle_stroke(c, 6.0, egui::Stroke::new(1.5, color));
+                                ui.painter().line_segment([c - egui::vec2(3.0, 3.0), c + egui::vec2(4.0, 4.0)], egui::Stroke::new(2.0, color));
+                            },
+                            "Spawn" => {
+                                draw_arc(ui.painter(), c, 5.0, 2.0, 5.5, egui::Stroke::new(2.0, color));
+                                let pr = c + egui::vec2(5.0, 5.0);
+                                ui.painter().line_segment([pr - egui::vec2(2.0, 0.0), pr + egui::vec2(2.0, 0.0)], egui::Stroke::new(1.5, color));
+                                ui.painter().line_segment([pr - egui::vec2(0.0, 2.0), pr + egui::vec2(0.0, 2.0)], egui::Stroke::new(1.5, color));
+                            },
+                            "RectSpawn" => {
+                                ui.painter().rect_stroke(egui::Rect::from_center_size(c, egui::vec2(10.0, 10.0)), 0.0, egui::Stroke::new(1.5, color));
+                                let pr = c + egui::vec2(5.0, 5.0);
+                                ui.painter().line_segment([pr - egui::vec2(2.0, 0.0), pr + egui::vec2(2.0, 0.0)], egui::Stroke::new(1.5, color));
+                                ui.painter().line_segment([pr - egui::vec2(0.0, 2.0), pr + egui::vec2(0.0, 2.0)], egui::Stroke::new(1.5, color));
+                            },
+                            "LineSpawn" => {
+                                ui.painter().line_segment([c - egui::vec2(5.0, -5.0), c + egui::vec2(5.0, -5.0)], egui::Stroke::new(2.0, color));
+                                let pr = c + egui::vec2(5.0, -5.0);
+                                ui.painter().line_segment([pr - egui::vec2(2.0, 0.0), pr + egui::vec2(2.0, 0.0)], egui::Stroke::new(1.5, color));
+                                ui.painter().line_segment([pr - egui::vec2(0.0, 2.0), pr + egui::vec2(0.0, 2.0)], egui::Stroke::new(1.5, color));
+                            },
+                            "GrowthSpawn" => {
+                                ui.painter().circle_filled(c, 2.0, color);
+                                for k in 0..6 {
+                                    let a = (k as f32) * std::f32::consts::PI / 3.0;
+                                    let p1 = c + egui::vec2(a.cos() * 2.5, a.sin() * 2.5);
+                                    let p2 = c + egui::vec2(a.cos() * 6.5, a.sin() * 6.5);
+                                    ui.painter().line_segment([p1, p2], egui::Stroke::new(1.0, color));
+                                    ui.painter().circle_filled(p2, 1.0, color);
+                                }
+                            },
+                            "PlaceSource" => {
+                                ui.painter().circle_stroke(c, 5.0, egui::Stroke::new(1.5, color));
+                                ui.painter().circle_filled(c, 2.0, color);
+                            },
+                            "CopyRect" => {
+                                ui.painter().rect_stroke(egui::Rect::from_center_size(c, egui::vec2(12.0, 12.0)), 0.0, egui::Stroke::new(1.5, color));
+                                ui.painter().rect_stroke(egui::Rect::from_center_size(c + egui::vec2(3.0, 3.0), egui::vec2(6.0, 6.0)), 0.0, egui::Stroke::new(1.0, color.linear_multiply(0.5)));
+                            },
+                            "PasteClick" => {
+                                ui.painter().rect_filled(egui::Rect::from_center_size(c, egui::vec2(10.0, 10.0)), 2.0, color.linear_multiply(0.3));
+                                ui.painter().line_segment([c - egui::vec2(0.0, 4.5), c + egui::vec2(0.0, 4.5)], egui::Stroke::new(1.5, color));
+                                ui.painter().line_segment([c - egui::vec2(4.5, 0.0), c + egui::vec2(4.5, 0.0)], egui::Stroke::new(1.5, color));
+                            },
+                            "Normal" => {
+                                draw_hex(ui.painter(), c, 5.0, egui::Stroke::new(1.5, color), None);
+                                let pa = c + egui::vec2(0.0, 3.5);
+                                ui.painter().line_segment([c - egui::vec2(0.0, 1.5), pa], egui::Stroke::new(1.0, color));
+                                ui.painter().line_segment([pa - egui::vec2(1.5, -1.5), pa], egui::Stroke::new(1.0, color));
+                                ui.painter().line_segment([pa + egui::vec2(1.5, -1.5), pa], egui::Stroke::new(1.0, color));
+                            },
+                            "ZeroGravity" => {
+                                draw_hex(ui.painter(), c, 5.0, egui::Stroke::new(1.5, color), None);
+                            },
+                            "SemiFixed" => {
+                                draw_hex(ui.painter(), c, 5.0, egui::Stroke::new(1.5, color), None);
+                                ui.painter().circle_filled(c, 2.0, color);
+                            },
+                            "Fixed" => {
+                                draw_hex(ui.painter(), c, 5.0, egui::Stroke::new(1.5, color), Some(color));
+                            },
+                            _ => {}
+                        }
+                        
+                        render_inline_markdown(ui, rest);
+                    } else {
+                        render_inline_markdown(ui, text_line);
+                    }
+                } else {
+                    render_inline_markdown(ui, text_line);
+                }
+            });
+        } else if line.starts_with("> ") {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(10.0);
+                let mut job = egui::text::LayoutJob::default();
+                job.append(&line[2..], 0.0, egui::text::TextFormat {
+                    font_id: egui::FontId::proportional(14.0),
+                    color: egui::Color32::from_rgb(150, 150, 150),
+                    italics: true,
+                    ..Default::default()
+                });
+                ui.label(job);
+            });
+        } else {
+            render_inline_markdown(ui, line);
+        }
+    }
+}
+
 async fn run() {
     let event_loop = EventLoop::new().unwrap();
     let window_icon = image::load_from_memory(include_bytes!("icon.ico")).ok().and_then(|img| {
@@ -524,6 +1070,7 @@ async fn run() {
         .with_inner_size(winit::dpi::LogicalSize::new(1400u32, 800u32));
 
     let window = Arc::new(builder.build(&event_loop).unwrap());
+    window.set_ime_allowed(true);
 
     // ===== GPU 后端选择（优先 Vulkan，其次 DX12）=====
     // FXC (DX11) 不支持我们 compute shader 中的动态数组索引，必须用 Vulkan 或 DX12+DXC
@@ -788,7 +1335,7 @@ async fn run() {
         mapped_at_creation: false,
     });
 
-    const MAX_PHOTONS: u32 = 200_000;
+    const MAX_PHOTONS: u32 = 500_000;
     let photon_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("photon_buf"),
         size: (MAX_PHOTONS as u64) * (std::mem::size_of::<Photon>() as u64),
@@ -832,6 +1379,18 @@ async fn run() {
     });
 
     // ===== Compute Pipelines (GPU only) =====
+    let stats_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stats_buf"),
+        size: 4,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let stats_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stats_staging_buf"),
+        size: 4,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
     let (compute_bg, pipeline_clear, pipeline_populate, pipeline_physics, grid_workgroups, p_photons) = if compute_mode == ComputeMode::Gpu {
         let cs = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compute"),
@@ -847,6 +1406,7 @@ async fn run() {
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -859,6 +1419,7 @@ async fn run() {
                 wgpu::BindGroupEntry { binding: 4, resource: pos_residue_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: photon_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: light_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: stats_buf.as_entire_binding() },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1112,8 +1673,10 @@ async fn run() {
     let mut spawn_mode = SpawnNodeMode::Normal;
     let mut semi_fixed_damping = 5.0f32; // 鍒濆闃诲凹棰勭畻 N
     let mut current_material = 0;
+    let mut selected_material_group: Option<String> = None;
     let mut allow_dynamic_link = true;
     let mut allow_surface_tension = true;
+    let mut replace_mode = false;
     let mut rect_start: Option<[f32; 2]> = None;
     let mut just_spawn_rect: Option<([f32; 2], [f32; 2])> = None;
     let mut just_spawn_line: Option<([f32; 2], [f32; 2])> = None;
@@ -1172,12 +1735,26 @@ async fn run() {
     let mut next_source_id = 1u32;
 
     let materials_file = std::fs::read_to_string("materials.json").unwrap_or_else(|_| "[]".to_string());
-    let mut materials: Vec<MaterialDef> = serde_json::from_str(&materials_file).unwrap_or_else(|_| vec![]);
+    let mut source_presets: Vec<SourcePreset> = match std::fs::read_to_string("source_presets.json") {
+        Ok(json) => serde_json::from_str(&json).unwrap_or_else(|_| Vec::new()),
+        Err(_) => Vec::new(),
+    };
+    let mut show_source_preset_window = false;
+    let mut new_source_preset_name = String::new();
+
+    let mut materials: Vec<MaterialDef> = match serde_json::from_str(&materials_file) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("Load materials.json error: {}", e);
+            vec![]
+        }
+    };
 
     let mut show_add_material_window = false;
     let mut editing_material_index: Option<usize> = None;
     let mut deleting_material_index: Option<usize> = None;
     let mut new_material_name = String::from("新材质");
+    let mut new_material_group = String::from("默认");
     let mut new_material_color = [255u8, 255, 255, 255];
     let mut new_material_color2 = [255u8, 255, 255, 255];
     let mut new_material_is_noisy = false;
@@ -1190,9 +1767,13 @@ async fn run() {
     let mut new_material_melt = 1000.0f32;
     let mut new_material_boil = 2000.0f32;
     let mut new_material_surface_tension = 0.0f32;
+    let mut new_material_logic_rules: Vec<LogicRule> = Vec::new();
     let mut new_material_light_transmission = 0.0f32;
     let mut new_material_light_reflectivity = 0.0f32;
     let mut new_material_refractive_index = 1.0f32;
+    let mut new_material_heat_conduction = 1.0f32;
+    let mut new_material_heat_capacity = 1.0f32;
+    let mut new_material_reflectance_spectrum: Option<Vec<(f32, f32)>> = None;
 
     let mut selected_source_type = 1; // 0=鍏? 1=粒子, 2=引力
     let mut selected_edit_source_id: Option<u32> = None;
@@ -1208,9 +1789,14 @@ async fn run() {
     let mut source_light_speed = 5.0f32;
     let mut source_light_energy = 1.0f32;
     let mut source_light_lifetime = 2.0f32;
+    let mut source_light_min_wl = 380.0f32;
+    let mut source_light_max_wl = 750.0f32;
     let mut holding_source_id: Option<u32> = None;
+    let mut adjusting_angle_source_id: Option<u32> = None;
     let mut trigger_clear_non_fixed = false;
 
+    let mut show_tutorial_window = false;
+    let mut tutorial_tab = 0;
     let mut show_save_window = false;
     let mut show_load_window = false;
     let mut save_name_input = String::new();
@@ -1257,6 +1843,155 @@ async fn run() {
         (2_000_000, "2M",   50.0, [220,50,50]),    // 红
         (4_000_000, "4M",   60.0, [180,60,220]),   // 紫
     ];
+
+    // ===== 逻辑引擎后台同步系统 =====
+    let logic_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("logic_staging_buf"),
+        size: ((num_particles.max(1)) as u64) * (std::mem::size_of::<Particle>() as u64),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    
+    let (logic_task_tx, logic_task_rx) = std::sync::mpsc::channel::<(Vec<Particle>, Vec<MaterialDef>)>();
+    let (logic_result_tx, logic_result_rx) = std::sync::mpsc::channel::<Vec<LogicEvent>>();
+    
+    std::thread::spawn(move || {
+        while let Ok((particles, mats)) = logic_task_rx.recv() {
+            let mut events = Vec::new();
+            
+            for (i, p) in particles.iter().enumerate() {
+                if (p.mat_type & 0x40000000) != 0 { continue; }
+                let mat_id = (p.mat_type & 0xFF) as usize;
+                if let Some(m) = mats.get(mat_id) {
+                    if m.logic_rules.is_empty() { continue; }
+                    
+                    let link_count = p.links.iter().filter(|&&l| l != -1).count() as u32;
+                    for rule in &m.logic_rules {
+                        if !rule.is_active { continue; }
+                        let mut triggered = true;
+                        
+                        if let Some((min, max)) = rule.trigger_temp {
+                            if p.temperature < min || p.temperature > max { triggered = false; }
+                        }
+                        if let Some((min, max)) = rule.trigger_charge {
+                            if p.charge < min || p.charge > max { triggered = false; }
+                        }
+                        if let Some((min, max)) = rule.trigger_links {
+                            if link_count < min || link_count > max { triggered = false; }
+                        }
+                        
+                        let mut total_pull = 0.0;
+                        let mut total_push = 0.0;
+                        let mut mat_links_count = std::collections::HashMap::new();
+                        
+                        if rule.trigger_pull.is_some() || rule.trigger_push.is_some() || rule.trigger_mat_links.is_some() {
+                            for &l_idx in &p.links {
+                                if l_idx != -1 {
+                                    let other = &particles[l_idx as usize];
+                                    let other_mat = other.mat_type & 0xFF;
+                                    *mat_links_count.entry(other_mat).or_insert(0) += 1;
+                                    
+                                    let m1_conn = m.conn_dist_mult;
+                                    let m2_conn = mats.get(other_mat as usize).map(|mm| mm.conn_dist_mult).unwrap_or(1.5);
+                                    let dist = ((p.pos[0] - other.pos[0]).powi(2) + (p.pos[1] - other.pos[1]).powi(2)).sqrt();
+                                    let rest = 0.0112 * (m1_conn + m2_conn) * 0.5;
+                                    if dist > rest {
+                                        total_pull += dist - rest;
+                                    } else {
+                                        total_push += rest - dist;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if let Some((mat, min, max, prob)) = rule.trigger_mat_links {
+                            let count = *mat_links_count.get(&mat).unwrap_or(&0);
+                            if count < min || count > max || rand::random::<f32>() > prob { triggered = false; }
+                        }
+                        if let Some((min, max)) = rule.trigger_pull {
+                            if total_pull < min || total_pull > max { triggered = false; }
+                        }
+                        if let Some((min, max)) = rule.trigger_push {
+                            if total_push < min || total_push > max { triggered = false; }
+                        }
+                        
+                        if triggered {
+                            if let Some(add) = rule.effect_temp_add {
+                                events.push(LogicEvent::ChangeTemp { id: i as u32, new_temp: p.temperature + add });
+                            }
+                            if let Some(add) = rule.effect_charge_add {
+                                events.push(LogicEvent::ChangeCharge { id: i as u32, new_charge: p.charge + add });
+                            }
+                            if rule.effect_break_links {
+                                events.push(LogicEvent::BreakLinks { id: i as u32 });
+                            }
+                            if rule.effect_delete_self {
+                                events.push(LogicEvent::Delete { id: i as u32 });
+                            }
+                            if let Some(new_mat) = rule.effect_mutate {
+                                events.push(LogicEvent::Mutate { id: i as u32, new_mat });
+                            }
+                            if let Some((spawn_mat, spawn_count)) = rule.effect_spawn {
+                                for _ in 0..spawn_count {
+                                    let angle = rand::random::<f32>() * std::f32::consts::PI * 2.0;
+                                    let dist = 0.02 * (1.0 + rand::random::<f32>());
+                                    events.push(LogicEvent::Spawn { 
+                                        mat_type: spawn_mat, 
+                                        pos: [
+                                            p.pos[0] + angle.cos() * dist, 
+                                            p.pos[1] + angle.sin() * dist
+                                        ] 
+                                    });
+                                }
+                            }
+                            if let Some(params) = &rule.effect_emit_photon {
+                                let mut holes = Vec::new();
+                                for k in 0..6 {
+                                    if p.links[k] == -1 {
+                                        holes.push(k);
+                                    }
+                                }
+                                
+                                let emit_count = if params.force_spawn {
+                                    params.count
+                                } else {
+                                    std::cmp::min(params.count, holes.len() as u32)
+                                };
+                                
+                                for _ in 0..emit_count {
+                                    let best_ang = if holes.is_empty() {
+                                        rand::random::<f32>() * std::f32::consts::TAU
+                                    } else {
+                                        let choice = holes[rand::random::<usize>() % holes.len()];
+                                        p.angle + choice as f32 * std::f32::consts::PI / 3.0
+                                    };
+                                    
+                                    let mut single_param = params.clone();
+                                    single_param.count = 1;
+                                    
+                                    events.push(LogicEvent::EmitPhoton { 
+                                        pos: p.pos,
+                                        angle: best_ang,
+                                        params: single_param
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = logic_result_tx.send(events);
+        }
+    });
+
+    let mut logic_tick_timer = 0.0f32;
+    let (logic_map_tx, logic_map_rx) = std::sync::mpsc::channel();
+    let mut logic_mapping_active = false;
+    let mut logic_mapping_size = 0u64;
+
+    let mut alive_photons = 0u32;
+    let (stats_map_tx, stats_map_rx) = std::sync::mpsc::channel();
+    let mut stats_mapping_active = false;
 
     // ===== 主循环 =====
     event_loop
@@ -1362,17 +2097,63 @@ async fn run() {
                             if !old_pressed && left_pressed && left_click_mode == LeftClickMode::PlaceSource && !egui_context.wants_pointer_input() {
                                 // 点击到了源？
                                 let mut hit = None;
+                                let mut hit_angle = None;
+                                
+                                let sz = window.inner_size();
+                                let dpi = window.scale_factor() as f32;
+                                let screen_scale = camera.zoom * sz.height as f32 / 2.0 / dpi;
+                                let cell_world_size = (camera.scene_scale * 2.0) / 1024.0;
+                                let base_world_rad = 8.0 * cell_world_size;
+                                
                                 for src in &world_sources {
-                                    let effective_rad = 1.0;
-                                    let dist = f32::hypot(src.pos[0] - cursor_world[0], src.pos[1] - cursor_world[1]);
-                                    if dist < effective_rad { hit = Some(src.id); break; }
+                                    let dx = cursor_world[0] - src.pos[0];
+                                    let dy = cursor_world[1] - src.pos[1];
+                                    let dist = f32::hypot(dx, dy);
+                                    let mut is_angle_hit = false;
+                                    let has_angle = match src.source_type {
+                                        WorldSourceType::Particle { .. } | WorldSourceType::Light { .. } => true,
+                                        _ => false,
+                                    };
+                                    if has_angle {
+                                        let src_ang = match src.source_type {
+                                            WorldSourceType::Particle { angle, .. } => angle,
+                                            WorldSourceType::Light { dir_angle, .. } => dir_angle,
+                                            _ => 0.0,
+                                        };
+                                        let mut click_ang = f32::atan2(-dy, dx).to_degrees();
+                                        if click_ang < 0.0 { click_ang += 360.0; }
+                                        
+                                        let mut ang_diff = (click_ang - src_ang).abs() % 360.0;
+                                        if ang_diff > 180.0 { ang_diff = 360.0 - ang_diff; }
+                                        
+                                        let pixel_rad = src.radius * screen_scale;
+                                        let base_pixel_rad = base_world_rad * screen_scale;
+                                        let arrow_base = base_pixel_rad.max(pixel_rad);
+                                        let arrow_dist_px = arrow_base + 28.0;
+                                        let arrow_dist_world = arrow_dist_px / screen_scale;
+                                        let arrow_hit_radius_world = 20.0 / screen_scale;
+                                        
+                                        if ang_diff < 30.0 && dist > arrow_dist_world - arrow_hit_radius_world && dist < arrow_dist_world + arrow_hit_radius_world {
+                                            is_angle_hit = true;
+                                        }
+                                    }
+
+                                    if is_angle_hit {
+                                        hit_angle = Some(src.id);
+                                        break;
+                                    } else if dist < base_world_rad {
+                                        hit = Some(src.id);
+                                        break;
+                                    }
                                 }
                                 if let Some(id) = hit {
                                     holding_source_id = Some(id);
+                                } else if let Some(id) = hit_angle {
+                                    adjusting_angle_source_id = Some(id);
                                 } else {
                                     // 放置新源
                                     let ty = match selected_source_type {
-                                        0 => WorldSourceType::Light { rate_per_sec: source_light_rate, delay_accum: 0.0, angle: source_light_angle, speed: source_light_speed, energy: source_light_energy, lifetime: source_light_lifetime },
+                                        0 => WorldSourceType::Light { rate_per_sec: source_light_rate, delay_accum: 0.0, angle: source_light_angle, dir_angle: 270.0, speed: source_light_speed, energy: source_light_energy, lifetime: source_light_lifetime, min_wavelength: source_light_min_wl, max_wavelength: source_light_max_wl },
                                         1 => WorldSourceType::Particle { mat: source_particle_mat, node_mode: source_particle_node, rate_per_sec: source_rate, delay_accum: 0.0, speed: source_speed, angle: source_angle },
                                         _ => WorldSourceType::Gravity { force: source_force },
                                     };
@@ -1409,6 +2190,10 @@ async fn run() {
                             if !right_pressed {
                                 last_cursor = None;
                             }
+                        }
+                        if !left_pressed {
+                            holding_source_id = None;
+                            adjusting_angle_source_id = None;
                         }
                     }
                     WindowEvent::CursorMoved { position, .. } => {
@@ -1768,10 +2553,20 @@ async fn run() {
                             .max_width(280.0)
                             .show(&egui_context, |ui| {
                                 ui.set_max_width(280.0);
-                                ui.label(format!("渲染 FPS: {:.1}", current_fps));
-                                ui.label(format!("计算 FPS: {:.1}", current_fps * substeps as f32));
-                                ui.label(format!("每t耗时: {:.2} ms", time_per_tick));
-                                ui.label(format!("相机 Zoom: {:.2}x", camera.zoom));
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(format!("渲染 FPS: {:.1}", current_fps));
+                                        ui.label(format!("计算 FPS: {:.1}", current_fps * substeps as f32));
+                                        ui.label(format!("每t耗时: {:.2} ms", time_per_tick));
+                                        ui.label(format!("相机 Zoom: {:.2}x", camera.zoom));
+                                    });
+                                    ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                                        let btn = ui.add(egui::Button::new(egui::RichText::new("❓").size(24.0)).fill(egui::Color32::from_rgb(40, 40, 40)));
+                                        if btn.on_hover_text("使用指南 (教程)").clicked() {
+                                            show_tutorial_window = true;
+                                        }
+                                    });
+                                });
                                 ui.separator();
                                 ui.label("左键工具菜单:");
                                 ui.horizontal(|ui| {
@@ -1937,6 +2732,9 @@ async fn run() {
                                             ui.selectable_value(&mut selected_source_type, 0, "🔅 光源");
                                             ui.selectable_value(&mut selected_source_type, 1, "🚰 粒子发生源");
                                             ui.selectable_value(&mut selected_source_type, 2, "🌀 引力/排斥源");
+                                            if ui.button("📂 预设...").clicked() {
+                                                show_source_preset_window = true;
+                                            }
                                         });
                                         ui.add(egui::Slider::new(&mut source_radius, 0.5..=20.0).clamp_to_range(false).text("作用/喷射半径"));
                                         if selected_source_type == 1 {
@@ -1975,6 +2773,15 @@ async fn run() {
                                             ui.add(egui::Slider::new(&mut source_light_speed, 0.1..=100.0).clamp_to_range(false).logarithmic(true).text("光子速度"));
                                             ui.add(egui::Slider::new(&mut source_light_energy, 0.01..=10000.0).clamp_to_range(false).logarithmic(true).text("光子能量"));
                                             ui.add(egui::Slider::new(&mut source_light_lifetime, 0.1..=60.0).clamp_to_range(false).logarithmic(true).text("光子寿命(秒)"));
+                                            ui.horizontal(|ui| {
+                                                ui.label("波长范围:");
+                                                ui.add(egui::DragValue::new(&mut source_light_min_wl).speed(1.0).clamp_range(10.0..=source_light_max_wl));
+                                                ui.label("-");
+                                                ui.add(egui::DragValue::new(&mut source_light_max_wl).speed(1.0).clamp_range(source_light_min_wl..=2000.0));
+                                                ui.label("nm");
+                                            });
+                                            let rvec = vec![(source_light_min_wl, source_light_max_wl)];
+                                            draw_spectrum_bar(ui, Some(&rvec));
                                         } else if selected_source_type == 2 {
                                             ui.add(egui::Slider::new(&mut source_force, -0.05..=0.05).clamp_to_range(false).max_decimals(10).text("力场强度"));
                                             ui.label(if source_force > 0.0 { "效果：吸引" } else { "效果：排斥" });
@@ -2027,6 +2834,27 @@ async fn run() {
                                         ui.painter().line_segment([c + egui::vec2(7.0, 0.0), c + egui::vec2(5.5, -1.5)], egui::Stroke::new(1.0, color));
                                         ui.painter().line_segment([c + egui::vec2(7.0, 0.0), c + egui::vec2(5.5, 1.5)], egui::Stroke::new(1.0, color));
                                     }).on_hover_text("表面张力 (开启/关闭)").clicked() { allow_surface_tension = !allow_surface_tension; }
+
+                                    if mini_icon(ui, replace_mode, |ui, rect, color| {
+                                        let c = rect.center();
+                                        let r = 4.0;
+                                        ui.painter().circle_stroke(c - egui::vec2(2.5, 0.0), r, egui::Stroke::new(1.0, color));
+                                        ui.painter().circle_stroke(c + egui::vec2(2.5, 0.0), r, egui::Stroke::new(1.0, color));
+                                        let mut pts = Vec::new();
+                                        for i in 0..=5 {
+                                            let t = i as f32 / 5.0; // 0 to 1
+                                            let y = -3.0 + t * 6.0;
+                                            let x = (1.0 - (y / 3.0).powi(2)).max(0.0).sqrt() * 1.5;
+                                            pts.push(c + egui::vec2(x, y));
+                                        }
+                                        for i in 0..=5 {
+                                            let t = i as f32 / 5.0; // 0 to 1
+                                            let y = 3.0 - t * 6.0;
+                                            let x = -(1.0 - (y / 3.0).powi(2)).max(0.0).sqrt() * 1.5;
+                                            pts.push(c + egui::vec2(x, y));
+                                        }
+                                        ui.painter().add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
+                                    }).on_hover_text("覆盖替换模式 (开启/关闭)\n在已有粒子位置生成/粘贴时，直接替换属性而不创建新粒子").clicked() { replace_mode = !replace_mode; }
 
                                     ui.add_space(8.0);
                                     ui.label("节点:");
@@ -2158,19 +2986,43 @@ async fn run() {
                                     });
                                 ui.separator();
                                 ui.horizontal_wrapped(|ui| {
-                                    ui.label(format!("粒子: {}/{}", active_particles, particle_capacity));
-                                    if ui.button("🗑 非钉").on_hover_text("清空非钉固粒子").clicked() { trigger_clear_non_fixed = true; }
-                                    if ui.button("🗑 粒子").on_hover_text("清空粒子").clicked() { active_particles = 0; }
-                                    if ui.button("🗑 源").on_hover_text("清空源").clicked() { world_sources.clear(); }
-                                    if ui.button("💥 全部").on_hover_text("清空全部").clicked() { active_particles = 0; world_sources.clear(); }
+                                    ui.label(format!("粒子: {}/{} | 光子池: {} (占用 {}/{})", active_particles, particle_capacity, alive_photons, active_photons, MAX_PHOTONS)).on_hover_text("光子系统采用环形覆盖缓冲，占用满载为正常复用现象。池中数量代表当前物理场内存活的光子数。");
+                                    if wide_icon_btn(ui, 28.0, "清空非钉固粒子", |ui, rect, color| {
+                                        draw_trash_can(ui.painter(), rect.center() + egui::vec2(-2.0, 2.0), color, 0.8);
+                                        draw_hex(ui.painter(), rect.right_top() + egui::vec2(-6.0, 6.0), 3.5, egui::Stroke::new(1.0, color), None);
+                                    }).clicked() { trigger_clear_non_fixed = true; }
+                                    if wide_icon_btn(ui, 28.0, "清空粒子", |ui, rect, color| {
+                                        draw_trash_can(ui.painter(), rect.center() + egui::vec2(-2.0, 2.0), color, 0.8);
+                                        draw_hex(ui.painter(), rect.right_top() + egui::vec2(-6.0, 6.0), 3.5, egui::Stroke::new(1.0, color), Some(color));
+                                    }).clicked() { active_particles = 0; }
+                                    if wide_icon_btn(ui, 28.0, "清空源", |ui, rect, color| {
+                                        draw_trash_can(ui.painter(), rect.center() + egui::vec2(-2.0, 2.0), color, 0.8);
+                                        ui.painter().add(egui::Shape::circle_stroke(rect.right_top() + egui::vec2(-6.0, 6.0), 3.5, egui::Stroke::new(1.0, color)));
+                                    }).clicked() { world_sources.clear(); }
+                                    if wide_icon_btn(ui, 32.0, "清空全部", |ui, rect, color| {
+                                        draw_trash_can(ui.painter(), rect.center() + egui::vec2(-5.0, 2.0), color, 0.8);
+                                        ui.painter().text(rect.right_top() + egui::vec2(-8.0, 6.0), egui::Align2::CENTER_CENTER, "ALL", egui::FontId::proportional(7.0), color);
+                                    }).clicked() { active_particles = 0; world_sources.clear(); active_photons = 0; photon_head = 0; }
                                     
-                                    if ui.button("💾 存档").clicked() {
+                                    if wide_icon_btn(ui, 28.0, "存档", |ui, rect, color| {
+                                        ui.painter().rect_filled(egui::Rect::from_center_size(rect.center() + egui::vec2(-2.0, 2.0), egui::vec2(10.0, 10.0)), 1.0, color);
+                                        let c = rect.right_top() + egui::vec2(-6.0, 6.0);
+                                        ui.painter().line_segment([c + egui::vec2(0.0, -3.0), c + egui::vec2(0.0, 3.0)], egui::Stroke::new(1.0, color));
+                                        ui.painter().line_segment([c + egui::vec2(-2.0, 1.0), c + egui::vec2(0.0, 3.0)], egui::Stroke::new(1.0, color));
+                                        ui.painter().line_segment([c + egui::vec2(2.0, 1.0), c + egui::vec2(0.0, 3.0)], egui::Stroke::new(1.0, color));
+                                    }).clicked() {
                                         pending_save_snapshot = true;
                                         save_name_input = format!("save_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
                                         show_load_window = false;
                                         show_blueprint_window = false;
                                     }
-                                    if ui.button("📂 读档").clicked() {
+                                    if wide_icon_btn(ui, 28.0, "读档", |ui, rect, color| {
+                                        ui.painter().rect_stroke(egui::Rect::from_center_size(rect.center() + egui::vec2(-2.0, 2.0), egui::vec2(10.0, 10.0)), 1.0, egui::Stroke::new(1.5, color));
+                                        let c = rect.right_top() + egui::vec2(-6.0, 6.0);
+                                        ui.painter().line_segment([c + egui::vec2(0.0, -3.0), c + egui::vec2(0.0, 3.0)], egui::Stroke::new(1.0, color));
+                                        ui.painter().line_segment([c + egui::vec2(-2.0, -1.0), c + egui::vec2(0.0, -3.0)], egui::Stroke::new(1.0, color));
+                                        ui.painter().line_segment([c + egui::vec2(2.0, -1.0), c + egui::vec2(0.0, -3.0)], egui::Stroke::new(1.0, color));
+                                    }).clicked() {
                                         show_load_window = true;
                                         show_save_window = false;
                                         save_items.clear();
@@ -2190,7 +3042,13 @@ async fn run() {
                                         }
                                         save_items.sort_by(|a, b| b.time_str.cmp(&a.time_str));
                                     }
-                                    if ui.button("🌟 存模型").on_hover_text("将剪贴板当作永久模型无感保存").clicked() {
+                                    if wide_icon_btn(ui, 28.0, "将剪贴板当作永久模型无感保存", |ui, rect, color| {
+                                        draw_4star(ui.painter(), rect.center() + egui::vec2(-2.0, 2.0), 6.0, egui::Stroke::new(1.0, color), Some(color));
+                                        let c = rect.right_top() + egui::vec2(-6.0, 6.0);
+                                        ui.painter().line_segment([c + egui::vec2(0.0, -3.0), c + egui::vec2(0.0, 3.0)], egui::Stroke::new(1.0, color));
+                                        ui.painter().line_segment([c + egui::vec2(-2.0, 1.0), c + egui::vec2(0.0, 3.0)], egui::Stroke::new(1.0, color));
+                                        ui.painter().line_segment([c + egui::vec2(2.0, 1.0), c + egui::vec2(0.0, 3.0)], egui::Stroke::new(1.0, color));
+                                    }).clicked() {
                                         if let Some(blueprint) = &blueprint_clipboard {
                                             let mut img = image::RgbaImage::from_pixel(256, 256, image::Rgba([40, 40, 50, 255]));
                                             let mut min_x = f32::MAX; let mut max_x = f32::MIN; let mut min_y = f32::MAX; let mut max_y = f32::MIN;
@@ -2201,7 +3059,7 @@ async fn run() {
                                             let mut hinges = 0;
                                             for p in blueprint {
                                                 for &l in &p.links { if l >= 0 { hinges += 1; } }
-                                                let px = (p.pos[0] - c_x) * scale + 128.0; let py = (p.pos[1] - c_y) * scale + 128.0;
+                                                let px = (p.pos[0] - c_x) * scale + 128.0; let py = 255.0 - ((p.pos[1] - c_y) * scale + 128.0);
                                                 if px >= 0.0 && px < 256.0 && py >= 0.0 && py < 256.0 {
                                                     let mat = p.mat_type & 0xFF;
                                                     let mut c = [200, 200, 200, 255];
@@ -2220,7 +3078,13 @@ async fn run() {
                                             let _ = img.save(format!("blueprints/bp_{}.png", ts));
                                         }
                                     }
-                                    if ui.button("📋 模型库").clicked() {
+                                    if wide_icon_btn(ui, 28.0, "模型库", |ui, rect, color| {
+                                        draw_4star(ui.painter(), rect.center() + egui::vec2(-2.0, 2.0), 6.0, egui::Stroke::new(1.5, color), None);
+                                        let c = rect.right_top() + egui::vec2(-6.0, 6.0);
+                                        ui.painter().line_segment([c + egui::vec2(0.0, -3.0), c + egui::vec2(0.0, 3.0)], egui::Stroke::new(1.0, color));
+                                        ui.painter().line_segment([c + egui::vec2(-2.0, -1.0), c + egui::vec2(0.0, -3.0)], egui::Stroke::new(1.0, color));
+                                        ui.painter().line_segment([c + egui::vec2(2.0, -1.0), c + egui::vec2(0.0, -3.0)], egui::Stroke::new(1.0, color));
+                                    }).clicked() {
                                         show_blueprint_window = true;
                                         show_save_window = false;
                                         show_load_window = false;
@@ -2248,12 +3112,14 @@ async fn run() {
                             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(15.0, -15.0))
                             .title_bar(false)
                             .resizable(false)
+                            .auto_sized()
                             .show(&egui_context, |ui| {
+                                ui.set_max_width(240.0);
                                 ui.vertical(|ui| {
                                     // 鏉愯川瀹氫箟锛?名称, 枚举, 鏍囩棰滆壊) 鈥?绮掑瓙棰勮浣跨敤鐪熷疄鐫€鑹查€昏緫
-                                    let mut mats = Vec::new();
+                                    let mut grouped_mats: std::collections::BTreeMap<String, Vec<(String, u32, egui::Color32)>> = std::collections::BTreeMap::new();
                                     for (i, m) in materials.iter().enumerate() {
-                                        mats.push((m.name.clone(), i as u32, egui::Color32::from_rgb(m.color[0], m.color[1], m.color[2])));
+                                        grouped_mats.entry(m.group.clone()).or_default().push((m.name.clone(), i as u32, egui::Color32::from_rgb(m.color[0], m.color[1], m.color[2])));
                                     }
                                     
                                     if let Some(idx) = deleting_material_index.take() {
@@ -2270,9 +3136,9 @@ async fn run() {
                                                 let _ = std::fs::write("materials.json", json);
                                             }
                                             // Make sure we redraw mats list
-                                            mats.clear();
+                                            grouped_mats.clear();
                                             for (i, m) in materials.iter().enumerate() {
-                                                mats.push((m.name.clone(), i as u32, egui::Color32::from_rgb(m.color[0], m.color[1], m.color[2])));
+                                                grouped_mats.entry(m.group.clone()).or_default().push((m.name.clone(), i as u32, egui::Color32::from_rgb(m.color[0], m.color[1], m.color[2])));
                                             }
                                         }
                                     }
@@ -2280,7 +3146,7 @@ async fn run() {
                                     let time = ui.input(|i| i.time) as f32;
                                     let angle = time * 10.0_f32.to_radians(); // 10 degrees per second
 
-                                    // 鐪熷疄绮掑瓙鐫€鑹插嚱鏁帮紙闀滃儚 shader_compute.wgsl 涓殑 velocity_color 閫昏緫锛?
+                                    // 真实粒子着色函数（镜像 shader_compute.wgsl 中的 velocity_color 逻辑）
                                     let real_particle_color = |mat: u32, speed: f32, particle_id: u32| -> egui::Color32 {
                                         if let Some(m) = materials.get(mat as usize) {
                                             let mut r = m.color[0] as f32;
@@ -2299,130 +3165,345 @@ async fn run() {
                                         }
                                     };
 
-                                    for (_name, mat, col) in mats {
-                                        let size = egui::vec2(140.0, 48.0);
-                                        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-                                        let was_clicked = response.clicked();
-                                        let is_hovered = response.hovered();
-
-                                        if was_clicked {
-                                            current_material = mat;
-                                        }
-
-                                        // 鎮仠鏃舵樉绀鸿缁嗘暟鎹?
-                                        if let Some(m) = materials.get(mat as usize) {
-                                            response.clone().on_hover_ui(|ui| {
-                                                ui.strong(&m.name);
-                                                ui.label(format!("颜色: R{} G{} B{}", m.color[0], m.color[1], m.color[2]));
-                                                ui.label(format!("质量: {}", m.mass));
-                                                ui.label(format!("直径: {}", m.diameter));
-                                                ui.label(format!("链接距离强度: {}", m.link_dist_strength));
-                                                ui.label(format!("铰链角度强度: {}", m.link_angle_strength));
-                                                ui.label(format!("熔点: {}°", m.melt_temp));
-                                            });
-                                        }
-
-                                        let is_selected = current_material == mat;
-                                        // 绘制卡片背景
-                                        let bg_color = if is_selected {
-                                            egui::Color32::from_rgba_unmultiplied(60, 60, 60, 230)
-                                        } else if is_hovered {
-                                            egui::Color32::from_rgba_unmultiplied(50, 50, 50, 200)
+                                    let valid_group = if let Some(sg) = &selected_material_group {
+                                        if grouped_mats.contains_key(sg) {
+                                            sg.clone()
                                         } else {
-                                            egui::Color32::from_rgba_unmultiplied(35, 35, 40, 180)
-                                        };
-                                        ui.painter().rect_filled(rect, 6.0, bg_color);
-                                        
-                                        // 鎻忚竟閫変腑鐘舵€?
-                                        if is_selected {
-                                            ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.5, col));
+                                            grouped_mats.keys().next().cloned().unwrap_or_default()
                                         }
+                                    } else {
+                                        grouped_mats.keys().next().cloned().unwrap_or_default()
+                                    };
+                                    selected_material_group = Some(valid_group.clone());
 
-                                        // 文字左侧居中
-                                        ui.painter().text(
-                                            rect.min + egui::vec2(10.0, 24.0),
-                                            egui::Align2::LEFT_CENTER,
-                                            &materials.get(mat as usize).map_or("未知".to_string(), |m| m.name.clone()),
-                                            egui::FontId::proportional(16.0),
-                                            col,
-                                        );
-
-                                        // 浣跨敤鐪熷疄绮掑瓙鐫€鑹查€昏緫鐢熸垚棰勮棰滆壊
-                                        let simulated_speed = match mat {
-                                            0 => {
-                                                let cycle = (time * std::f32::consts::PI).sin() * 0.5 + 0.5;
-                                                cycle * 0.012
-                                            }
-                                            _ => 0.0,
-                                        };
-
-                                        // 鍙充晶缁樺埗鍏竟褰?7 涓矑瀛愮ず渚?
-                                        let center = rect.min + egui::vec2(112.0, 24.0);
-                                        let r = 2.5;
-                                        let dist = 8.0;
-
-                                        // 涓績绮掑瓙
-                                        let center_col = real_particle_color(mat, simulated_speed, 0);
-                                        ui.painter().circle_filled(center, r, center_col);
-
-                                        // 周围 6 涓矑瀛愬強杩炵嚎
-                                        for i in 0..6u32 {
-                                            let a = angle + (i as f32) * std::f32::consts::PI / 3.0;
-                                            let pos = center + egui::vec2(a.cos() * dist, a.sin() * dist);
-                                            let particle_col = real_particle_color(mat, simulated_speed, i + 1);
-
-                                            // 涓績杩炵嚎
-                                            ui.painter().line_segment(
-                                                [center, pos],
-                                                egui::Stroke::new(1.0, particle_col.linear_multiply(0.5)),
-                                            );
-
-                                            // 互相连线
-                                            let next_a = angle + ((i + 1) as f32) * std::f32::consts::PI / 3.0;
-                                            let next_pos = center + egui::vec2(next_a.cos() * dist, next_a.sin() * dist);
-                                            ui.painter().line_segment(
-                                                [pos, next_pos],
-                                                egui::Stroke::new(1.0, particle_col.linear_multiply(0.5)),
-                                            );
-
-                                            ui.painter().circle_filled(pos, r, particle_col);
-                                        }
-
-                                        response.context_menu(|ui| {
-                                            if ui.button("✏ 编辑(Edit)").clicked() {
-                                                editing_material_index = Some(mat as usize);
-                                                if let Some(m) = materials.get(mat as usize) {
-                                                    new_material_name = m.name.clone();
-                                                    new_material_color = m.color;
-                                                    new_material_color2 = m.color2.unwrap_or(m.color);
-                                                    new_material_is_noisy = m.is_noisy.unwrap_or(false);
-                                                    new_material_is_soft = m.is_soft.unwrap_or(false);
-                                                    new_material_mass = m.mass;
-                                                    new_material_diameter = m.diameter;
-                                                    new_material_conn_dist = m.conn_dist_mult;
-                                                    new_material_link_dist = m.link_dist_strength;
-                                                    new_material_link_angle = m.link_angle_strength;
-                                                    new_material_melt = m.melt_temp;
-                                                    new_material_boil = m.boil_temp.unwrap_or(2000.0);
-                                                    new_material_surface_tension = m.surface_tension.unwrap_or(0.0);
-                                                    new_material_light_transmission = m.light_transmission.unwrap_or(0.0);
-                                                    new_material_light_reflectivity = m.light_reflectivity.unwrap_or(0.0);
-                                                    new_material_refractive_index = m.refractive_index.unwrap_or(1.0);
+                                    ui.horizontal(|ui| {
+                                        // 左侧：分组列表
+                                        ui.vertical(|ui| {
+                                            ui.set_min_width(80.0);
+                                            ui.set_min_height(350.0);
+                                            egui::ScrollArea::vertical().id_source("group_list").max_height(350.0).show(ui, |ui| {
+                                                for group_name in grouped_mats.keys() {
+                                                    let display_group = if group_name.trim().is_empty() { "未分组" } else { group_name.as_str() };
+                                                    let is_selected = selected_material_group.as_ref() == Some(group_name);
+                                                    if ui.selectable_label(is_selected, display_group).clicked() {
+                                                        selected_material_group = Some(group_name.clone());
+                                                    }
                                                 }
-                                                show_add_material_window = true;
-                                                ui.close_menu();
-                                            }
-                                            if mat >= 8 {
-                                                if ui.button("🗑 删除(Delete)").clicked() {
-                                                    deleting_material_index = Some(mat as usize);
-                                                    ui.close_menu();
-                                                }
-                                            }
+                                            });
                                         });
-                                    }
+
+                                        ui.separator();
+
+                                        // 右侧：选定分组内的粒子列表
+                                        ui.vertical(|ui| {
+                                            ui.set_min_height(350.0);
+                                            egui::ScrollArea::vertical().id_source("particle_list").max_height(350.0).show(ui, |ui| {
+                                                if let Some(list) = grouped_mats.get(&valid_group) {
+                                                    for (m_name, m_mat, m_col) in list {
+                                                        let mat = *m_mat;
+                                                        let col = *m_col;
+                                                        let size = egui::vec2(140.0, 48.0);
+                                                        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+                                                        let was_clicked = response.clicked();
+                                                        let is_hovered = response.hovered();
+
+                                                        if was_clicked {
+                                                            current_material = mat;
+                                                        }
+
+                                                        let is_selected = current_material == mat;
+                                                        let bg_color = if is_selected {
+                                                            egui::Color32::from_rgba_unmultiplied(60, 60, 60, 230)
+                                                        } else if is_hovered {
+                                                            egui::Color32::from_rgba_unmultiplied(50, 50, 50, 200)
+                                                        } else {
+                                                            egui::Color32::from_rgba_unmultiplied(35, 35, 40, 180)
+                                                        };
+                                                        ui.painter().rect_filled(rect, 6.0, bg_color);
+                                                        
+                                                        if is_selected {
+                                                            ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.5, col));
+                                                        }
+
+                                                        ui.painter().text(
+                                                            rect.min + egui::vec2(10.0, 24.0),
+                                                            egui::Align2::LEFT_CENTER,
+                                                            m_name,
+                                                            egui::FontId::proportional(16.0),
+                                                            col,
+                                                        );
+
+                                                        let simulated_speed = match mat {
+                                                            0 => {
+                                                                let cycle = (time * std::f32::consts::PI).sin() * 0.5 + 0.5;
+                                                                cycle * 0.012
+                                                            }
+                                                            _ => 0.0,
+                                                        };
+
+                                                        let center = rect.min + egui::vec2(112.0, 24.0);
+                                                        let r = 2.5;
+                                                        let dist = 8.0;
+                                                        let center_col = real_particle_color(mat, simulated_speed, 0);
+                                                        ui.painter().circle_filled(center, r, center_col);
+
+                                                        for i in 0..6u32 {
+                                                            let a = angle + (i as f32) * std::f32::consts::PI / 3.0;
+                                                            let pos = center + egui::vec2(a.cos() * dist, a.sin() * dist);
+                                                            let particle_col = real_particle_color(mat, simulated_speed, i + 1);
+
+                                                            ui.painter().line_segment(
+                                                                [center, pos],
+                                                                egui::Stroke::new(1.0, particle_col.linear_multiply(0.5)),
+                                                            );
+                                                            let next_a = angle + ((i + 1) as f32) * std::f32::consts::PI / 3.0;
+                                                            let next_pos = center + egui::vec2(next_a.cos() * dist, next_a.sin() * dist);
+                                                            ui.painter().line_segment(
+                                                                [pos, next_pos],
+                                                                egui::Stroke::new(1.0, particle_col.linear_multiply(0.5)),
+                                                            );
+                                                            ui.painter().circle_filled(pos, r, particle_col);
+                                                        }
+
+                                                        response.context_menu(|ui| {
+                                                            if ui.button("✏ 编辑(Edit)").clicked() {
+                                                                editing_material_index = Some(mat as usize);
+                                                                if let Some(m) = materials.get(mat as usize) {
+                                                                    new_material_name = m.name.clone();
+                                                                    new_material_group = m.group.clone();
+                                                                    new_material_logic_rules = m.logic_rules.clone();
+                                                                    new_material_color = m.color;
+                                                                    new_material_color2 = m.color2.unwrap_or(m.color);
+                                                                    new_material_is_noisy = m.is_noisy.unwrap_or(false);
+                                                                    new_material_is_soft = m.is_soft.unwrap_or(false);
+                                                                    new_material_mass = m.mass;
+                                                                    new_material_diameter = m.diameter;
+                                                                    new_material_conn_dist = m.conn_dist_mult;
+                                                                    new_material_link_dist = m.link_dist_strength;
+                                                                    new_material_link_angle = m.link_angle_strength;
+                                                                    new_material_melt = m.melt_temp;
+                                                                    new_material_boil = m.boil_temp.unwrap_or(2000.0);
+                                                                    new_material_surface_tension = m.surface_tension.unwrap_or(0.0);
+                                                                    new_material_light_transmission = m.light_transmission.unwrap_or(0.0);
+                                                                    new_material_light_reflectivity = m.light_reflectivity.unwrap_or(0.0);
+                                                                    new_material_refractive_index = m.refractive_index.unwrap_or(1.0);
+                                                        new_material_heat_conduction = m.heat_conduction.unwrap_or(1.0);
+                                                        new_material_heat_capacity = m.specific_heat_capacity.unwrap_or(1.0);
+                                                        new_material_reflectance_spectrum = m.reflectance_spectrum.clone();
+                                                                }
+                                                                show_add_material_window = true;
+                                                                ui.close_menu();
+                                                            }
+                                                            if mat >= 8 {
+                                                                if ui.button("🗑 删除(Delete)").clicked() {
+                                                                    deleting_material_index = Some(mat as usize);
+                                                                    ui.close_menu();
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+                                                }
+                                            });
+                                        });
+                                    });
+                                    
+                                    ui.separator();
+                                    
+                                    // 中间部分：详细信息显示（选中的粒子）
+                                    ui.vertical(|ui| {
+                                        ui.set_min_height(160.0);
+                                        egui::ScrollArea::vertical().id_source("detail_view").max_height(180.0).show(ui, |ui| {
+                                            if let Some(m) = materials.get(current_material as usize) {
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.heading(&m.name);
+                                                        ui.add_space(8.0);
+                                                        if let Some(ranges) = &m.reflectance_spectrum {
+                                                            draw_spectrum_bar(ui, Some(ranges));
+                                                        } else {
+                                                            draw_spectrum_bar(ui, None);
+                                                        }
+                                                    });
+                                                    ui.horizontal(|ui| {
+                                                        ui.vertical(|ui| {
+                                                            ui.label(format!("所属分组: {}", m.group));
+                                                        if !m.logic_rules.is_empty() {
+                                                            ui.label(format!("(包含 {} 个逻辑规则)", m.logic_rules.len()));
+                                                        }
+                                                        
+                                                        let mut draw_log_bar = |label: &str, val: f32, min_val: f32, max_val: f32| {
+                                                            let offset = if min_val <= 0.0 { -min_val + 1.0 } else { 0.0 };
+                                                            let v_log = (val + offset).ln();
+                                                            let min_log = (min_val + offset).ln();
+                                                            let max_log = (max_val + offset).ln();
+                                                            let mut ratio = (v_log - min_log) / (max_log - min_log);
+                                                            if ratio.is_nan() { ratio = 0.0; }
+                                                            ratio = ratio.clamp(0.0, 1.0);
+                                                            
+                                                            let p = (val.abs() / max_val) * 100.0;
+                                                            let stops = [
+                                                                (0.0, egui::Color32::from_rgb(0, 255, 255)),     // Cyan
+                                                                (10.0, egui::Color32::from_rgb(0, 150, 255)),    // Blue
+                                                                (100.0, egui::Color32::from_rgb(0, 150, 255)),   // Blue
+                                                                (500.0, egui::Color32::from_rgb(255, 255, 0)),   // Yellow
+                                                                (2000.0, egui::Color32::from_rgb(255, 0, 0)),    // Red
+                                                                (5000.0, egui::Color32::from_rgb(128, 0, 128)),  // Purple
+                                                            ];
+                                                            
+                                                            let bar_color = if p <= stops[0].0 {
+                                                                stops[0].1
+                                                            } else if p >= stops[stops.len() - 1].0 {
+                                                                stops[stops.len() - 1].1
+                                                            } else {
+                                                                let mut col = stops[0].1;
+                                                                for i in 0..stops.len() - 1 {
+                                                                    let (p1, c1) = stops[i];
+                                                                    let (p2, c2) = stops[i + 1];
+                                                                    if p >= p1 && p <= p2 {
+                                                                        let t = (p - p1) / (p2 - p1);
+                                                                        let r = (c1.r() as f32 * (1.0 - t) + c2.r() as f32 * t) as u8;
+                                                                        let g = (c1.g() as f32 * (1.0 - t) + c2.g() as f32 * t) as u8;
+                                                                        let b = (c1.b() as f32 * (1.0 - t) + c2.b() as f32 * t) as u8;
+                                                                        col = egui::Color32::from_rgb(r, g, b);
+                                                                        break;
+                                                                    }
+                                                                }
+                                                                col
+                                                            };
+                                                            let luminance = 0.299 * bar_color.r() as f32 + 0.587 * bar_color.g() as f32 + 0.114 * bar_color.b() as f32;
+                                                            let fill_text_color = if luminance > 128.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };
+                                                            let bg_text_color = ui.visuals().text_color();
+                                                            let text_str = format!("{}: {:.1}", label, val);
+                                                            
+                                                            let (rect, _resp) = ui.allocate_exact_size(egui::vec2(130.0, 18.0), egui::Sense::hover());
+                                                            if ui.is_rect_visible(rect) {
+                                                                let bg_color = ui.visuals().extreme_bg_color;
+                                                                ui.painter().rect_filled(rect, 4.0, bg_color);
+                                                                
+                                                                let mut fill_rect = rect;
+                                                                fill_rect.max.x = rect.min.x + (rect.width() * ratio).clamp(0.0, rect.width());
+                                                                if fill_rect.max.x > fill_rect.min.x {
+                                                                    ui.painter().rect_filled(fill_rect, 4.0, bar_color);
+                                                                }
+                                                                
+                                                                let font_id = egui::TextStyle::Body.resolve(ui.style());
+                                                                let galley_bg = ui.painter().layout_no_wrap(text_str.clone(), font_id.clone(), bg_text_color);
+                                                                let galley_fill = ui.painter().layout_no_wrap(text_str, font_id, fill_text_color);
+                                                                
+                                                                let text_pos = egui::pos2(rect.min.x + 6.0, rect.center().y - galley_bg.size().y / 2.0);
+                                                                
+                                                                let mut empty_clip = rect;
+                                                                empty_clip.min.x = fill_rect.max.x;
+                                                                ui.painter().with_clip_rect(empty_clip).galley(text_pos, galley_bg, bg_text_color);
+                                                                ui.painter().with_clip_rect(fill_rect).galley(text_pos, galley_fill, fill_text_color);
+                                                            }
+                                                        };
+                                                        
+                                                        draw_log_bar("质量", m.mass, -1.0, 1000.0);
+                                                        draw_log_bar("链接距离强度", m.link_dist_strength, 0.0, 10.0);
+                                                        draw_log_bar("铰链角度强度", m.link_angle_strength, 0.0, 10.0);
+                                                        draw_log_bar("熔点", m.melt_temp, 0.0, 10000.0);
+                                                        draw_log_bar("沸点", m.boil_temp.unwrap_or(2000.0), 0.0, 10000.0);
+                                                        
+                                                        let ref_val = m.light_reflectivity.unwrap_or(0.1);
+                                                        let ref_text = format!("反射率: {:.0}%", ref_val * 100.0);
+                                                        let bar_color = egui::Color32::from_rgb(0, 150, 200);
+                                                        let luminance = 0.299 * bar_color.r() as f32 + 0.587 * bar_color.g() as f32 + 0.114 * bar_color.b() as f32;
+                                                        let fill_text_color = if luminance > 128.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };
+                                                        let bg_text_color = ui.visuals().text_color();
+                                                        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(130.0, 18.0), egui::Sense::hover());
+                                                        if ui.is_rect_visible(rect) {
+                                                            let bg_color = ui.visuals().extreme_bg_color;
+                                                            ui.painter().rect_filled(rect, 4.0, bg_color);
+                                                            let mut fill_rect = rect;
+                                                            fill_rect.max.x = rect.min.x + (rect.width() * ref_val).clamp(0.0, rect.width());
+                                                            if fill_rect.max.x > fill_rect.min.x {
+                                                                ui.painter().rect_filled(fill_rect, 4.0, bar_color);
+                                                            }
+                                                            let font_id = egui::TextStyle::Body.resolve(ui.style());
+                                                            let galley_bg = ui.painter().layout_no_wrap(ref_text.clone(), font_id.clone(), bg_text_color);
+                                                            let galley_fill = ui.painter().layout_no_wrap(ref_text, font_id, fill_text_color);
+                                                            let text_pos = egui::pos2(rect.min.x + 6.0, rect.center().y - galley_bg.size().y / 2.0);
+                                                            let mut empty_clip = rect;
+                                                            empty_clip.min.x = fill_rect.max.x;
+                                                            ui.painter().with_clip_rect(empty_clip).galley(text_pos, galley_bg, bg_text_color);
+                                                            ui.painter().with_clip_rect(fill_rect).galley(text_pos, galley_fill, fill_text_color);
+                                                        }
+                                                    });
+                                                    
+                                                    // 绘制大型旋转的3层6边形粒子示例
+                                                    ui.add_space(8.0);
+                                                    {
+                                                        let size = egui::vec2(90.0, 90.0);
+                                                        let (rect, _resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+                                                        
+                                                        let mat = current_material;
+                                                        let simulated_speed = match mat {
+                                                            0 => {
+                                                                let cycle = (time * std::f32::consts::PI).sin() * 0.5 + 0.5;
+                                                                cycle * 0.012
+                                                            }
+                                                            _ => 0.0,
+                                                        };
+                                                        
+                                                        let center = rect.center();
+                                                        let pt_r = 2.5;
+                                                        let spacing = 8.0;
+
+                                                        let mut hex_points = Vec::new();
+                                                        for q in -3..=3 {
+                                                            for r_coord in -3..=3 {
+                                                                let s = -q - r_coord;
+                                                                if s >= -3 && s <= 3 {
+                                                                    let x = spacing * 3.0f32.sqrt() * (q as f32 + (r_coord as f32) / 2.0);
+                                                                    let y = spacing * 1.5 * (r_coord as f32);
+                                                                    hex_points.push(egui::vec2(x, y));
+                                                                }
+                                                            }
+                                                        }
+
+                                                        let cos_a = angle.cos();
+                                                        let sin_a = angle.sin();
+
+                                                        let mut rotated_points = Vec::new();
+                                                        for p in &hex_points {
+                                                            let rx = p.x * cos_a - p.y * sin_a;
+                                                            let ry = p.x * sin_a + p.y * cos_a;
+                                                            rotated_points.push(center + egui::vec2(rx, ry));
+                                                        }
+
+                                                        let p_col_base = real_particle_color(mat, simulated_speed, 0);
+
+                                                        for i in 0..rotated_points.len() {
+                                                            for j in i+1..rotated_points.len() {
+                                                                let p1 = hex_points[i];
+                                                                let p2 = hex_points[j];
+                                                                if (p1.x - p2.x).hypot(p1.y - p2.y) < spacing * 1.8 {
+                                                                    let rp1 = rotated_points[i];
+                                                                    let rp2 = rotated_points[j];
+                                                                    ui.painter().line_segment(
+                                                                        [rp1, rp2],
+                                                                        egui::Stroke::new(1.0, p_col_base.linear_multiply(0.5)),
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+
+                                                        for (i, &rp) in rotated_points.iter().enumerate() {
+                                                            let p_col = real_particle_color(mat, simulated_speed, i as u32);
+                                                            ui.painter().circle_filled(rp, pt_r, p_col);
+                                                        }
+                                                    }
+                                                });
+                                            });
+                                        } else {
+                                            ui.label("未选择任何材质");
+                                        }
+                                        });
+                                    });
                                     
                                     // 添加新材质的按钮卡片
-                                    let size = egui::vec2(140.0, 32.0);
+                                    let size = egui::vec2(ui.available_width(), 32.0);
                                     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
                                     let is_hovered = response.hovered();
                                     
@@ -2444,6 +3525,8 @@ async fn run() {
                                         // 显示弹窗
                                         editing_material_index = None;
                                         new_material_name = String::from("新材质");
+                                        new_material_group = String::from("默认");
+                                        new_material_logic_rules = Vec::new();
                                         new_material_color = [255u8, 255, 255, 255];
                                         new_material_color2 = [255u8, 255, 255, 255];
                                         new_material_is_noisy = false;
@@ -2459,6 +3542,9 @@ async fn run() {
                                         new_material_light_transmission = 0.0f32;
                                         new_material_light_reflectivity = 0.0f32;
                                         new_material_refractive_index = 1.0f32;
+                                        new_material_heat_conduction = 1.0f32;
+                                        new_material_heat_capacity = 1.0f32;
+                                        new_material_reflectance_spectrum = None;
                                         show_add_material_window = true;
                                     }
                                 });
@@ -2470,9 +3556,13 @@ async fn run() {
                             let window_title = if editing_material_index.is_some() { "编辑材质" } else { "添加新材质" };
                             egui::Window::new(window_title)
                                 .collapsible(false)
-                                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                                .resizable(true)
+                                .vscroll(true)
+                                .default_height(600.0)
+                                .default_pos(egui::pos2(egui_context.screen_rect().width() * 0.3, 50.0))
                                 .show(&egui_context, |ui| {
                                     ui.horizontal(|ui| { ui.label("名称:"); ui.text_edit_singleline(&mut new_material_name); });
+                                    ui.horizontal(|ui| { ui.label("所属分组:"); ui.text_edit_singleline(&mut new_material_group); });
                                     
                                     ui.horizontal(|ui| {
                                         ui.label("颜色 1:");
@@ -2505,8 +3595,262 @@ async fn run() {
                                     ui.horizontal(|ui| { ui.label("光透射率:"); ui.add(egui::DragValue::new(&mut new_material_light_transmission).clamp_range(0.0f32..=1.0).speed(0.01)); });
                                     ui.horizontal(|ui| { ui.label("光反射率:"); ui.add(egui::DragValue::new(&mut new_material_light_reflectivity).clamp_range(0.0f32..=1.0).speed(0.01)); });
                                     ui.horizontal(|ui| { ui.label("折射率:"); ui.add(egui::DragValue::new(&mut new_material_refractive_index).clamp_range(1.0f32..=100.0).speed(0.01)); });
+                                    ui.horizontal(|ui| { ui.label("导热系数:"); ui.add(egui::DragValue::new(&mut new_material_heat_conduction).clamp_range(0.0f32..=100.0).speed(0.01)); });
+                                    ui.horizontal(|ui| { ui.label("比热容:"); ui.add(egui::DragValue::new(&mut new_material_heat_capacity).clamp_range(0.01f32..=100.0).speed(0.01)); });
+                                    
+                                    ui.horizontal(|ui| {
+                                        let mut has_val = new_material_reflectance_spectrum.is_some();
+                                        if ui.checkbox(&mut has_val, "启用特定反射光谱").changed() {
+                                            new_material_reflectance_spectrum = if has_val { Some(vec![(380.0, 750.0)]) } else { None };
+                                        }
+                                    });
+                                    if let Some(ranges) = &mut new_material_reflectance_spectrum {
+                                        let mut to_remove = None;
+                                        for (i, range) in ranges.iter_mut().enumerate() {
+                                            ui.push_id(i, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(format!("范围 {}:", i + 1));
+                                                    ui.add_sized([80.0, 20.0], egui::DragValue::new(&mut range.0).speed(1.0).clamp_range(100.0..=2000.0).prefix("Min: "));
+                                                    ui.add_space(8.0);
+                                                    ui.add_sized([80.0, 20.0], egui::DragValue::new(&mut range.1).speed(1.0).clamp_range(100.0..=2000.0).prefix("Max: "));
+                                                    ui.add_space(16.0);
+                                                    if ui.button("🗑").on_hover_text("删除此波段范围").clicked() {
+                                                        to_remove = Some(i);
+                                                    }
+                                                    let rvec = vec![(range.0, range.1)];
+                                                    draw_spectrum_bar(ui, Some(&rvec));
+                                                });
+                                            });
+                                        }
+                                        if let Some(idx) = to_remove {
+                                            ranges.remove(idx);
+                                        }
+                                        if ranges.len() < 4 {
+                                            if ui.button("+ 添加光谱范围").clicked() {
+                                                ranges.push((380.0, 750.0));
+                                            }
+                                        }
+                                    }
                                     
                                     ui.separator();
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("逻辑规则:").strong());
+                                        if ui.button("+ 添加规则").clicked() {
+                                            new_material_logic_rules.push(LogicRule {
+                                                name: format!("新规则 {}", new_material_logic_rules.len() + 1),
+                                                is_active: true,
+                                                ..Default::default()
+                                            });
+                                        }
+                                    });
+                                    
+                                    if !new_material_logic_rules.is_empty() {
+                                            let mut to_delete_rule = None;
+                                            for (i, rule) in new_material_logic_rules.iter_mut().enumerate() {
+                                                egui::CollapsingHeader::new(&rule.name).id_source(format!("rule_{}", i)).show(ui, |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label("规则名称:");
+                                                        ui.text_edit_singleline(&mut rule.name);
+                                                        ui.checkbox(&mut rule.is_active, "启用");
+                                                        if ui.button("🗑 删除").clicked() {
+                                                            to_delete_rule = Some(i);
+                                                        }
+                                                    });
+                                                    
+                                                    ui.separator();
+                                                    ui.label(egui::RichText::new("【 触发条件 】").strong().color(egui::Color32::LIGHT_BLUE));
+                                                    
+                                                    // Temp trigger
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.trigger_temp.is_some();
+                                                        if ui.checkbox(&mut has_val, "温度范围 (°C)").changed() {
+                                                            rule.trigger_temp = if has_val { Some((0.0, 100.0)) } else { None };
+                                                        }
+                                                        if let Some((min, max)) = &mut rule.trigger_temp {
+                                                            ui.add(egui::DragValue::new(min).speed(1.0).prefix("Min: "));
+                                                            ui.add(egui::DragValue::new(max).speed(1.0).prefix("Max: "));
+                                                        }
+                                                    });
+
+                                                    // Charge trigger
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.trigger_charge.is_some();
+                                                        if ui.checkbox(&mut has_val, "电能范围").changed() {
+                                                            rule.trigger_charge = if has_val { Some((0.0, 100.0)) } else { None };
+                                                        }
+                                                        if let Some((min, max)) = &mut rule.trigger_charge {
+                                                            ui.add(egui::DragValue::new(min).speed(1.0).prefix("Min: "));
+                                                            ui.add(egui::DragValue::new(max).speed(1.0).prefix("Max: "));
+                                                        }
+                                                    });
+
+                                                    // Links trigger
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.trigger_links.is_some();
+                                                        if ui.checkbox(&mut has_val, "链接数量").changed() {
+                                                            rule.trigger_links = if has_val { Some((0, 6)) } else { None };
+                                                        }
+                                                        if let Some((min, max)) = &mut rule.trigger_links {
+                                                            ui.add(egui::DragValue::new(min).speed(1).clamp_range(0..=6).prefix("Min: "));
+                                                            ui.add(egui::DragValue::new(max).speed(1).clamp_range(0..=6).prefix("Max: "));
+                                                        }
+                                                    });
+                                                    
+                                                    // Mat links trigger
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.trigger_mat_links.is_some();
+                                                        if ui.checkbox(&mut has_val, "特定材质链接").changed() {
+                                                            rule.trigger_mat_links = if has_val { Some((0, 1, 6, 1.0)) } else { None };
+                                                        }
+                                                        if let Some((mat, min, max, prob)) = &mut rule.trigger_mat_links {
+                                                            let selected_name = materials.get(*mat as usize).map(|m| m.name.clone()).unwrap_or_else(|| format!("ID: {}", mat));
+                                                            egui::ComboBox::from_id_source(format!("trigger_mat_links_{}", i))
+                                                                .selected_text(selected_name)
+                                                                .show_ui(ui, |ui| {
+                                                                    for (m_idx, m) in materials.iter().enumerate() {
+                                                                        ui.selectable_value(mat, m_idx as u32, &m.name);
+                                                                    }
+                                                                });
+                                                            ui.add(egui::DragValue::new(min).speed(1).clamp_range(0..=6).prefix("Min: "));
+                                                            ui.add(egui::DragValue::new(max).speed(1).clamp_range(0..=6).prefix("Max: "));
+                                                            ui.add(egui::DragValue::new(prob).speed(0.01).clamp_range(0.0..=1.0).prefix("概率: "));
+                                                        }
+                                                    });
+                                                    
+                                                    // Pull trigger
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.trigger_pull.is_some();
+                                                        if ui.checkbox(&mut has_val, "受到拉力").changed() {
+                                                            rule.trigger_pull = if has_val { Some((0.0, 10.0)) } else { None };
+                                                        }
+                                                        if let Some((min, max)) = &mut rule.trigger_pull {
+                                                            ui.add(egui::DragValue::new(min).speed(0.01).prefix("Min: "));
+                                                            ui.add(egui::DragValue::new(max).speed(0.01).prefix("Max: "));
+                                                        }
+                                                    });
+                                                    
+                                                    // Push trigger
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.trigger_push.is_some();
+                                                        if ui.checkbox(&mut has_val, "受到压力").changed() {
+                                                            rule.trigger_push = if has_val { Some((0.0, 10.0)) } else { None };
+                                                        }
+                                                        if let Some((min, max)) = &mut rule.trigger_push {
+                                                            ui.add(egui::DragValue::new(min).speed(0.01).prefix("Min: "));
+                                                            ui.add(egui::DragValue::new(max).speed(0.01).prefix("Max: "));
+                                                        }
+                                                    });
+                                                    
+                                                    ui.separator();
+                                                    ui.label(egui::RichText::new("【 触发效果 】").strong().color(egui::Color32::LIGHT_GREEN));
+
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.effect_temp_add.is_some();
+                                                        if ui.checkbox(&mut has_val, "温度变化").changed() {
+                                                            rule.effect_temp_add = if has_val { Some(10.0) } else { None };
+                                                        }
+                                                        if let Some(val) = &mut rule.effect_temp_add {
+                                                            ui.add(egui::DragValue::new(val).speed(1.0).prefix("增/减量: "));
+                                                        }
+                                                    });
+
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.effect_charge_add.is_some();
+                                                        if ui.checkbox(&mut has_val, "电能变化").changed() {
+                                                            rule.effect_charge_add = if has_val { Some(10.0) } else { None };
+                                                        }
+                                                        if let Some(val) = &mut rule.effect_charge_add {
+                                                            ui.add(egui::DragValue::new(val).speed(1.0).prefix("增/减量: "));
+                                                        }
+                                                    });
+
+                                                    ui.checkbox(&mut rule.effect_break_links, "断开所有链接");
+                                                    ui.checkbox(&mut rule.effect_delete_self, "删除自身 (消灭)");
+
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.effect_mutate.is_some();
+                                                        if ui.checkbox(&mut has_val, "突变为其它材质").changed() {
+                                                            rule.effect_mutate = if has_val { Some(0) } else { None };
+                                                        }
+                                                        if let Some(val) = &mut rule.effect_mutate {
+                                                            let selected_name = materials.get(*val as usize).map(|m| m.name.clone()).unwrap_or_else(|| format!("ID: {}", val));
+                                                            egui::ComboBox::from_id_source(format!("mutate_combo_{}", i))
+                                                                .selected_text(selected_name)
+                                                                .show_ui(ui, |ui| {
+                                                                    for (m_idx, m) in materials.iter().enumerate() {
+                                                                        ui.selectable_value(val, m_idx as u32, &m.name);
+                                                                    }
+                                                                });
+                                                        }
+                                                    });
+
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.effect_spawn.is_some();
+                                                        if ui.checkbox(&mut has_val, "强制生成新粒子").changed() {
+                                                            rule.effect_spawn = if has_val { Some((0, 1)) } else { None };
+                                                        }
+                                                        if let Some((mat, count)) = &mut rule.effect_spawn {
+                                                            let selected_name = materials.get(*mat as usize).map(|m| m.name.clone()).unwrap_or_else(|| format!("ID: {}", mat));
+                                                            egui::ComboBox::from_id_source(format!("spawn_combo_{}", i))
+                                                                .selected_text(selected_name)
+                                                                .show_ui(ui, |ui| {
+                                                                    for (m_idx, m) in materials.iter().enumerate() {
+                                                                        ui.selectable_value(mat, m_idx as u32, &m.name);
+                                                                    }
+                                                                });
+                                                            ui.add(egui::DragValue::new(count).speed(1).clamp_range(1..=100).prefix("数量: "));
+                                                        }
+                                                    });
+                                                    
+                                                    // Emit photon
+                                                    ui.horizontal(|ui| {
+                                                        let mut has_val = rule.effect_emit_photon.is_some();
+                                                        if ui.checkbox(&mut has_val, "发射光子").changed() {
+                                                            rule.effect_emit_photon = if has_val { Some(PhotonEmitParams::default()) } else { None };
+                                                        }
+                                                        if let Some(params) = &mut rule.effect_emit_photon {
+                                                            ui.add(egui::DragValue::new(&mut params.count).speed(1).clamp_range(1..=100).prefix("数量: "));
+                                                            ui.add(egui::DragValue::new(&mut params.energy).speed(0.01).prefix("能量: "));
+                                                            ui.add(egui::DragValue::new(&mut params.speed).speed(0.1).prefix("速度: "));
+                                                            ui.add(egui::DragValue::new(&mut params.lifetime).speed(0.1).prefix("寿命: "));
+                                                            ui.checkbox(&mut params.force_spawn, "强制生成 (无视空穴)");
+                                                        }
+                                                    });
+                                                    if let Some(params) = &mut rule.effect_emit_photon {
+                                                        ui.horizontal(|ui| {
+                                                            ui.label("光子波段 (nm):");
+                                                            if ui.button("+ 添加波段").clicked() {
+                                                                params.wavelength_ranges.push((400.0, 700.0));
+                                                            }
+                                                        });
+                                                        draw_spectrum_bar(ui, Some(&params.wavelength_ranges));
+                                                        let mut to_remove = None;
+                                                        for (w_i, w_range) in params.wavelength_ranges.iter_mut().enumerate() {
+                                                            ui.horizontal(|ui| {
+                                                                ui.add(egui::DragValue::new(&mut w_range.0).speed(1.0).prefix("Min: "));
+                                                                ui.add(egui::DragValue::new(&mut w_range.1).speed(1.0).prefix("Max: "));
+                                                                if ui.button("X").clicked() {
+                                                                    to_remove = Some(w_i);
+                                                                }
+                                                            });
+                                                        }
+                                                        if let Some(w_i) = to_remove {
+                                                            params.wavelength_ranges.remove(w_i);
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                            if let Some(idx) = to_delete_rule {
+                                                new_material_logic_rules.remove(idx);
+                                            }
+                                    }
+                                    
+                                    ui.separator();
+                                    
+                                    if editing_material_index.is_none() && materials.len() >= 64 {
+                                        ui.label(egui::RichText::new("⚠️ 材质数量已达上限 (最大 64 个)").color(egui::Color32::RED));
+                                    }
+                                    
                                     ui.horizontal(|ui| {
                                         let btn_label = if editing_material_index.is_some() { "保存" } else { "添加" };
                                         if ui.button(btn_label).clicked() {
@@ -2528,6 +3872,11 @@ async fn run() {
                                                     m.light_transmission = Some(new_material_light_transmission);
                                                     m.light_reflectivity = Some(new_material_light_reflectivity);
                                                     m.refractive_index = Some(new_material_refractive_index);
+                                                    m.heat_conduction = Some(new_material_heat_conduction);
+                                                    m.specific_heat_capacity = Some(new_material_heat_capacity);
+                                                    m.group = new_material_group.clone();
+                                                    m.logic_rules = new_material_logic_rules.clone();
+                                                    m.reflectance_spectrum = new_material_reflectance_spectrum.clone();
                                                 }
                                                 if let Ok(json) = serde_json::to_string_pretty(&materials) {
                                                     let _ = std::fs::write("materials.json", json);
@@ -2535,9 +3884,11 @@ async fn run() {
                                                 show_add_material_window = false;
                                                 editing_material_index = None;
                                             } else {
-                                                if materials.len() < 16 {
+                                                if materials.len() < 64 {
                                                     materials.push(MaterialDef {
                                                         name: new_material_name.clone(),
+                                                        group: new_material_group.clone(),
+                                                        logic_rules: new_material_logic_rules.clone(),
                                                         color: new_material_color,
                                                         color2: if new_material_is_noisy { Some(new_material_color2) } else { Some(new_material_color) },
                                                         mass: new_material_mass,
@@ -2553,6 +3904,9 @@ async fn run() {
                                                         light_transmission: Some(new_material_light_transmission),
                                                         light_reflectivity: Some(new_material_light_reflectivity),
                                                         refractive_index: Some(new_material_refractive_index),
+                                                        heat_conduction: Some(new_material_heat_conduction),
+                                                        specific_heat_capacity: Some(new_material_heat_capacity),
+                                                        reflectance_spectrum: new_material_reflectance_spectrum.clone(),
                                                     });
                                                     if let Ok(json) = serde_json::to_string_pretty(&materials) {
                                                         let _ = std::fs::write("materials.json", json);
@@ -2565,6 +3919,159 @@ async fn run() {
                                         }
                                         if ui.button("取消").clicked() {
                                             show_add_material_window = false;
+                                        }
+                                    });
+
+                                });
+                        }
+
+                        if show_source_preset_window {
+                            egui::Window::new("源预设")
+                                .collapsible(false)
+                                .resizable(true)
+                                .show(&egui_context, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.text_edit_singleline(&mut new_source_preset_name);
+                                        if ui.button("保存当前为新预设").clicked() {
+                                            if !new_source_preset_name.is_empty() {
+                                                let config = if selected_source_type == 0 {
+                                                    SourcePresetConfig::Light {
+                                                        rate: source_light_rate,
+                                                        speed: source_light_speed,
+                                                        energy: source_light_energy,
+                                                        lifetime: source_light_lifetime,
+                                                        min_wl: source_light_min_wl,
+                                                        max_wl: source_light_max_wl,
+                                                        angle: source_light_angle,
+                                                        radius: source_radius,
+                                                    }
+                                                } else if selected_source_type == 1 {
+                                                    SourcePresetConfig::Particle {
+                                                        mat: source_particle_mat as usize,
+                                                        node: source_particle_node,
+                                                        rate: source_rate,
+                                                        speed: source_speed,
+                                                        angle: source_angle,
+                                                        radius: source_radius,
+                                                    }
+                                                } else {
+                                                    SourcePresetConfig::Gravity {
+                                                        force: source_force,
+                                                        radius: source_radius,
+                                                    }
+                                                };
+                                                source_presets.push(SourcePreset {
+                                                    name: new_source_preset_name.clone(),
+                                                    config,
+                                                });
+                                                if let Ok(json) = serde_json::to_string_pretty(&source_presets) {
+                                                    let _ = std::fs::write("source_presets.json", json);
+                                                }
+                                                new_source_preset_name.clear();
+                                            }
+                                        }
+                                    });
+                                    ui.separator();
+                                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                                        let mut to_delete = None;
+                                        for (i, preset) in source_presets.iter().enumerate() {
+                                            ui.horizontal(|ui| {
+                                                let type_str = match preset.config {
+                                                    SourcePresetConfig::Light {..} => "🔅",
+                                                    SourcePresetConfig::Particle {..} => "🚰",
+                                                    SourcePresetConfig::Gravity {..} => "🌀",
+                                                };
+                                                if ui.button(format!("{} 加载: {}", type_str, preset.name)).clicked() {
+                                                    match &preset.config {
+                                                        SourcePresetConfig::Light { rate, speed, energy, lifetime, min_wl, max_wl, angle, radius } => {
+                                                            selected_source_type = 0;
+                                                            source_light_rate = *rate;
+                                                            source_light_speed = *speed;
+                                                            source_light_energy = *energy;
+                                                            source_light_lifetime = *lifetime;
+                                                            source_light_min_wl = *min_wl;
+                                                            source_light_max_wl = *max_wl;
+                                                            source_light_angle = *angle;
+                                                            source_radius = *radius;
+                                                        },
+                                                        SourcePresetConfig::Particle { mat, node, rate, speed, angle, radius } => {
+                                                            selected_source_type = 1;
+                                                            source_particle_mat = *mat as u32;
+                                                            source_particle_node = *node;
+                                                            source_rate = *rate;
+                                                            source_speed = *speed;
+                                                            source_angle = *angle;
+                                                            source_radius = *radius;
+                                                        },
+                                                        SourcePresetConfig::Gravity { force, radius } => {
+                                                            selected_source_type = 2;
+                                                            source_force = *force;
+                                                            source_radius = *radius;
+                                                        }
+                                                    }
+                                                }
+                                                if ui.button("❌").clicked() {
+                                                    to_delete = Some(i);
+                                                }
+                                            });
+                                        }
+                                        if let Some(idx) = to_delete {
+                                            source_presets.remove(idx);
+                                            if let Ok(json) = serde_json::to_string_pretty(&source_presets) {
+                                                let _ = std::fs::write("source_presets.json", json);
+                                            }
+                                        }
+                                    });
+                                    ui.separator();
+                                    if ui.button("关闭").clicked() {
+                                        show_source_preset_window = false;
+                                    }
+                                });
+                        }
+
+                        if show_tutorial_window {
+                            egui::Window::new("使用指南")
+                                .title_bar(false)
+                                .collapsible(false)
+                                .resizable(false)
+                                .movable(false)
+                                .fixed_pos(screen_rect.min)
+                                .fixed_size(screen_rect.size())
+                                .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(230)))
+                                .show(&egui_context, |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.add_space(50.0);
+                                        egui::Frame::none()
+                                            .fill(egui::Color32::from_rgb(30, 30, 30))
+                                            .rounding(10.0)
+                                            .inner_margin(20.0)
+                                            .show(ui, |ui| {
+                                                ui.set_width(screen_rect.width() * 0.6);
+                                                ui.set_height(screen_rect.height() * 0.7);
+                                                ui.horizontal(|ui| {
+                                                    let tabs = ["⌨ 按键", "🔧 工具", "📦 材料", "⚛ 物理", "🌈 光学", "🎬 场景"];
+                                                    ui.add_space((ui.available_width() - 320.0) / 2.0);
+                                                    for (i, tab_name) in tabs.iter().enumerate() {
+                                                        ui.selectable_value(&mut tutorial_tab, i, *tab_name);
+                                                    }
+                                                });
+                                                ui.separator();
+                                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                                        match tutorial_tab {
+                                                            0 => render_markdown(ui, include_str!("tutorial_keys.md")),
+                                                            1 => render_markdown(ui, include_str!("tutorial_tools.md")),
+                                                            2 => render_markdown(ui, include_str!("tutorial_materials.md")),
+                                                            3 => render_markdown(ui, include_str!("tutorial_physics.md")),
+                                                            4 => render_markdown(ui, include_str!("tutorial_optics.md")),
+                                                            _ => render_markdown(ui, include_str!("tutorial_scenes.md")),
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                        ui.add_space(20.0);
+                                        if ui.add(egui::Button::new(egui::RichText::new("关闭教程").size(24.0)).min_size(egui::vec2(160.0, 50.0))).clicked() {
+                                            show_tutorial_window = false;
                                         }
                                     });
                                 });
@@ -3053,6 +4560,37 @@ async fn run() {
                                     painter.circle_stroke(p, base_pixel_rad, egui::Stroke::new(2.0, color));
                                     painter.circle_filled(p, base_pixel_rad * 0.5, color.linear_multiply(0.3));
 
+                                    let mut src_angle = None;
+                                    if let WorldSourceType::Particle { angle, .. } = src.source_type { src_angle = Some(angle); }
+                                    if let WorldSourceType::Light { dir_angle, .. } = src.source_type { src_angle = Some(dir_angle); }
+                                    
+                                    if let Some(angle) = src_angle {
+                                        let rad_angle = angle.to_radians();
+                                        let dir = egui::vec2(rad_angle.cos(), rad_angle.sin());
+                                        let arrow_base = base_pixel_rad.max(pixel_rad);
+                                        let p1 = p + dir * (arrow_base + 8.0);
+                                        let p2 = p + dir * (arrow_base + 28.0);
+                                        let tip = p + dir * (arrow_base + 38.0);
+                                        let base1 = p2 + egui::vec2(-dir.y, dir.x) * 6.0;
+                                        let base2 = p2 - egui::vec2(-dir.y, dir.x) * 6.0;
+                                        
+                                        // Change color based on if it's currently being dragged
+                                        let arrow_color = if adjusting_angle_source_id == Some(src.id) {
+                                            egui::Color32::YELLOW
+                                        } else {
+                                            egui::Color32::GREEN
+                                        };
+                                        
+                                        painter.line_segment([p1, p2], egui::Stroke::new(2.5, arrow_color));
+                                        
+                                        let arrow_shape = egui::Shape::convex_polygon(
+                                            vec![tip, base1, base2],
+                                            arrow_color,
+                                            egui::Stroke::NONE,
+                                        );
+                                        painter.add(arrow_shape);
+                                    }
+
                                     if selected_edit_source_id == Some(src.id) {
                                         let time = egui_context.input(|i| i.time) as f32;
                                         let segments = 64; // 让大圈的虚线更绵密点
@@ -3065,18 +4603,6 @@ async fn run() {
                                                 let p2 = p + egui::vec2(angle2.cos(), angle2.sin()) * pixel_rad;
                                                 painter.line_segment([p1, p2], egui::Stroke::new(1.5, color));
                                             }
-                                        }
-
-                                        if let WorldSourceType::Particle { angle, .. } = src.source_type {
-                                            let rad_angle = angle.to_radians();
-                                            let dir = egui::vec2(rad_angle.cos(), rad_angle.sin());
-                                            let p1 = p + dir * base_pixel_rad;
-                                            let p2 = p + dir * (pixel_rad + 20.0);
-                                            let p3 = p2 - dir * 6.0 + egui::vec2(-dir.y, dir.x) * 4.0;
-                                            let p4 = p2 - dir * 6.0 - egui::vec2(-dir.y, dir.x) * 4.0;
-                                            painter.line_segment([p1, p2], egui::Stroke::new(2.0, egui::Color32::GREEN));
-                                            painter.line_segment([p2, p3], egui::Stroke::new(2.0, egui::Color32::GREEN));
-                                            painter.line_segment([p2, p4], egui::Stroke::new(2.0, egui::Color32::GREEN));
                                         }
                                     }
                                 }
@@ -3101,11 +4627,6 @@ async fn run() {
                                                 for (idx, mat_def) in materials.iter().enumerate() {
                                                     ui.selectable_value(mat, idx as u32, &mat_def.name).on_hover_ui(|ui| {
                                                         ui.label(format!("名称: {}", mat_def.name));
-                                                        ui.label(format!("颜色: R{} G{} B{}", mat_def.color[0], mat_def.color[1], mat_def.color[2]));
-                                                        ui.label(format!("质量: {}", mat_def.mass));
-                                                        ui.label(format!("直径: {}", mat_def.diameter));
-                                                        ui.label(format!("链接距离强度: {}", mat_def.link_dist_strength));
-                                                        ui.label(format!("铰链角度强度: {}", mat_def.link_angle_strength));
                                                     });
                                                 }
                                             });
@@ -3125,12 +4646,22 @@ async fn run() {
                                         ui.add(egui::Slider::new(angle, 0.0..=360.0).clamp_to_range(false).text("喷射方向(度)"));
                                         ui.add(egui::Slider::new(speed, 0.0..=50.0).clamp_to_range(false).text("喷射速度"));
                                     }
-                                    if let WorldSourceType::Light { ref mut rate_per_sec, ref mut angle, ref mut speed, ref mut energy, ref mut lifetime, .. } = src.source_type {
+                                    if let WorldSourceType::Light { ref mut rate_per_sec, ref mut angle, ref mut dir_angle, ref mut speed, ref mut energy, ref mut lifetime, ref mut min_wavelength, ref mut max_wavelength, .. } = src.source_type {
                                         ui.add(egui::Slider::new(rate_per_sec, 1.0..=10000.0).clamp_to_range(false).logarithmic(true).text("发光量(光子/秒)"));
-                                        ui.add(egui::Slider::new(angle, 0.0..=360.0).clamp_to_range(false).text("发射角度(度)"));
+                                        ui.add(egui::Slider::new(angle, 0.0..=360.0).clamp_to_range(false).text("发射角度范围(度)"));
+                                        ui.add(egui::Slider::new(dir_angle, 0.0..=360.0).clamp_to_range(false).text("发射方向(度)"));
                                         ui.add(egui::Slider::new(speed, 0.1..=100.0).clamp_to_range(false).logarithmic(true).text("光子速度"));
                                         ui.add(egui::Slider::new(energy, 0.01..=10000.0).clamp_to_range(false).logarithmic(true).text("光子能量"));
                                         ui.add(egui::Slider::new(lifetime, 0.1..=60.0).clamp_to_range(false).logarithmic(true).text("光子寿命(秒)"));
+                                        ui.horizontal(|ui| {
+                                            ui.label("波长范围:");
+                                            ui.add(egui::DragValue::new(min_wavelength).speed(1.0).clamp_range(10.0..=*max_wavelength));
+                                            ui.label("-");
+                                            ui.add(egui::DragValue::new(max_wavelength).speed(1.0).clamp_range(*min_wavelength..=2000.0));
+                                            ui.label("nm");
+                                        });
+                                        let rvec = vec![(*min_wavelength, *max_wavelength)];
+                                        draw_spectrum_bar(ui, Some(&rvec));
                                     }
                                     if let WorldSourceType::Gravity { ref mut force } = src.source_type {
                                         ui.add(egui::Slider::new(force, -0.05..=0.05).clamp_to_range(false).max_decimals(10).text("力场强度"));
@@ -3145,6 +4676,28 @@ async fn run() {
                                 selected_edit_source_id = None;
                             }
                         }
+
+                        if left_pressed {
+                            if let Some(id) = holding_source_id {
+                                if let Some(src) = world_sources.iter_mut().find(|s| s.id == id) {
+                                    src.pos = cursor_world;
+                                }
+                            } else if let Some(id) = adjusting_angle_source_id {
+                                if let Some(src) = world_sources.iter_mut().find(|s| s.id == id) {
+                                    let dx = cursor_world[0] - src.pos[0];
+                                    let dy = cursor_world[1] - src.pos[1];
+                                    let mut new_ang = f32::atan2(-dy, dx).to_degrees();
+                                    if new_ang < 0.0 { new_ang += 360.0; }
+                                    
+                                    match &mut src.source_type {
+                                        WorldSourceType::Particle { angle, .. } => *angle = new_ang,
+                                        WorldSourceType::Light { dir_angle, .. } => *dir_angle = new_ang,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+
                         let full_output = egui_context.end_frame();
                         let paint_jobs = egui_context
                             .tessellate(full_output.shapes, window.scale_factor() as f32);
@@ -3198,6 +4751,33 @@ async fn run() {
                         let shift_held = egui_context.input(|i| i.modifiers.shift);
 
                         let mut drag_mode = 0u32;
+                        
+                        let mut existing_replace_state: Option<(Vec<Particle>, ParticleGrid)> = None;
+                        let any_spawn = just_clicked_spawn || just_spawn_rect.is_some() || just_spawn_line.is_some() || pending_paste_pos.is_some();
+                        if replace_mode && active_particles > 0 && any_spawn {
+                            let size = active_particles as u64 * std::mem::size_of::<Particle>() as u64;
+                            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                            enc.copy_buffer_to_buffer(&particle_buf, 0, &particle_staging_buf, 0, size);
+                            queue.submit(Some(enc.finish()));
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            particle_staging_buf.slice(..size).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+                            device.poll(wgpu::Maintain::Wait);
+                            match rx.recv() {
+                                Ok(Ok(())) => {
+                                    let data = particle_staging_buf.slice(..size).get_mapped_range();
+                                    let eps = bytemuck::cast_slice::<_, Particle>(&data).to_vec();
+                                    let m_props = materials.get(current_material as usize).map_or(1.5, |m| m.conn_dist_mult);
+                                    let dx = 0.0112 * m_props;
+                                    let grid = ParticleGrid::new(&eps, dx * 2.0);
+                                    existing_replace_state = Some((eps, grid));
+                                    drop(data);
+                                    particle_staging_buf.unmap();
+                                },
+                                _ => {
+                                    particle_staging_buf.unmap();
+                                }
+                            }
+                        }
                         let mut rm_x = 0.0;
                         let mut r_mx = 0.0;
                         let mut rm_y = 0.0;
@@ -3316,6 +4896,7 @@ async fn run() {
                                 else if spawn_mode == SpawnNodeMode::ZeroGravity { 0.0_f32 }
                                 else { 1.0_f32 },
                                 mult,
+                                &mut existing_replace_state,
                             );
                             just_clicked_spawn = false;
                         }
@@ -3337,6 +4918,7 @@ async fn run() {
                                 else if spawn_mode == SpawnNodeMode::ZeroGravity { 0.0_f32 }
                                 else { 1.0_f32 },
                                 mult,
+                                &mut existing_replace_state,
                             );
                             just_spawn_rect = None;
                         }
@@ -3362,6 +4944,8 @@ async fn run() {
                             let inv_mass = if spawn_mode == SpawnNodeMode::Fixed { 0.0_f32 } else { 1.0_f32 / mat_mass };
                             let grav_scale = if spawn_mode == SpawnNodeMode::SemiFixed { semi_fixed_grav } else if spawn_mode == SpawnNodeMode::ZeroGravity { 0.0_f32 } else { 1.0_f32 };
                             let mut new_pts = Vec::new();
+                            let mut replaced_indices = Vec::new();
+                            let start_idx = active_particles;
                             for i in 0..=steps {
                                 for j in -width_steps..=width_steps {
                                     let offset = if j.abs() % 2 != 0 { density_x * 0.5 } else { 0.0 };
@@ -3375,37 +4959,81 @@ async fn run() {
                                     let py = start_w[1] + norm_y * along + perp_y * across;
                                     if active_particles + new_pts.len() as u32 >= particle_capacity { break; }
                                     
-                                    new_pts.push(Particle {
-                                        pos: [px, py], vel: [0.0, 0.0], links: [-1; 6],
-                                        charge: 0.0, angle: 0.0, temperature: 0.0,
-                                        mat_type: current_material as u32,
-                                        inv_mass, grav_scale,
-                                    });
+                                    let mut replaced = false;
+                                    if let Some((ref mut eps, ref grid)) = existing_replace_state {
+                                        if let Some(idx) = grid.find_closest(px, py, density_x * 0.6, eps) {
+                                            eps[idx].mat_type = current_material as u32;
+                                            eps[idx].inv_mass = inv_mass;
+                                            eps[idx].grav_scale = grav_scale;
+                                            eps[idx].vel = [0.0, 0.0];
+                                            eps[idx].charge = 0.0;
+                                            eps[idx].temperature = 0.0;
+                                            replaced_indices.push(idx);
+                                            replaced = true;
+                                        }
+                                    }
+                                    
+                                    if !replaced {
+                                        new_pts.push(Particle {
+                                            pos: [px, py], vel: [0.0, 0.0], links: [-1; 6],
+                                            charge: 0.0, angle: 0.0, temperature: 0.0,
+                                            mat_type: current_material as u32,
+                                            inv_mass, grav_scale,
+                                        });
+                                    }
                                 }
                             }
                             
                             if spawn_prelinked {
-                                let pts_clone = new_pts.clone();
-                                let start_idx = active_particles;
-                                for i in 0..new_pts.len() {
-                                    let mut pt_links = [-1; 6];
-                                    let mut count = 0;
-                                    for j in 0..pts_clone.len() {
+                                let mut stamp_info = Vec::new();
+                                if let Some((ref eps, _)) = existing_replace_state {
+                                    for &idx in &replaced_indices {
+                                        stamp_info.push((idx as u32, eps[idx].pos));
+                                    }
+                                }
+                                for (i, p) in new_pts.iter().enumerate() {
+                                    stamp_info.push((start_idx + i as u32, p.pos));
+                                }
+
+                                for i in 0..stamp_info.len() {
+                                    let (g_idx1, pos1) = stamp_info[i];
+                                    for j in 0..stamp_info.len() {
                                         if i == j { continue; }
-                                        let dx_diff = new_pts[i].pos[0] - pts_clone[j].pos[0];
-                                        let dy_diff = new_pts[i].pos[1] - pts_clone[j].pos[1];
-                                        let dist = f32::hypot(dx_diff, dy_diff);
-                                        if dist < rest_dist * 1.05 && count < 6 {
-                                            pt_links[count] = (start_idx + j as u32) as i32;
-                                            count += 1;
+                                        let (g_idx2, pos2) = stamp_info[j];
+                                        let dist = f32::hypot(pos1[0] - pos2[0], pos1[1] - pos2[1]);
+                                        if dist > 0.001 && dist < rest_dist * 1.05 {
+                                            if i < replaced_indices.len() {
+                                                if let Some((ref mut eps, _)) = existing_replace_state {
+                                                    let p = &mut eps[g_idx1 as usize];
+                                                    if !p.links.contains(&(g_idx2 as i32)) {
+                                                        if let Some(empty) = p.links.iter_mut().find(|l| **l == -1) {
+                                                            *empty = g_idx2 as i32;
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                let local_idx = i - replaced_indices.len();
+                                                let p = &mut new_pts[local_idx];
+                                                if !p.links.contains(&(g_idx2 as i32)) {
+                                                    if let Some(empty) = p.links.iter_mut().find(|l| **l == -1) {
+                                                        *empty = g_idx2 as i32;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
-                                    new_pts[i].links = pt_links;
+                                }
+                            }
+
+                            if let Some((ref eps, _)) = existing_replace_state {
+                                for &idx in &replaced_indices {
+                                    let offset = idx as u64 * std::mem::size_of::<Particle>() as u64;
+                                    queue.write_buffer(&particle_buf, offset, bytemuck::bytes_of(&eps[idx]));
                                 }
                             }
                             
                             if !new_pts.is_empty() {
-                                write_particles_to_gpu(&queue, &particle_buf, active_particles as u64, &new_pts);
+                                write_particles_to_gpu(&queue, &particle_buf, start_idx as u64, &new_pts);
                                 active_particles += new_pts.len() as u32;
                             }
                             
@@ -3766,7 +5394,7 @@ async fn run() {
                                             active_particles += 1;
                                         }
                                     }
-                                } else if let WorldSourceType::Light { rate_per_sec, ref mut delay_accum, angle, speed, energy, lifetime } = src.source_type {
+                                } else if let WorldSourceType::Light { rate_per_sec, ref mut delay_accum, angle, dir_angle, speed, energy, lifetime, min_wavelength, max_wavelength } = src.source_type {
                                     let spawn_count_f = rate_per_sec * dt;
                                     *delay_accum += spawn_count_f;
                                     let mut spawned = 0;
@@ -3776,12 +5404,12 @@ async fn run() {
                                         
                                         let rand_theta = if angle >= 360.0 { rand::random::<f32>() * std::f32::consts::TAU } else { 
                                             let spread = angle.to_radians();
-                                            (rand::random::<f32>() - 0.5) * spread - std::f32::consts::FRAC_PI_2
+                                            (rand::random::<f32>() - 0.5) * spread + dir_angle.to_radians()
                                         };
                                         // 0.1% speed deviation
                                         let speed_var = speed * (1.0 + (rand::random::<f32>() - 0.5) * 0.002);
                                         let vel_x = speed_var * rand_theta.cos();
-                                        let vel_y = speed_var * rand_theta.sin();
+                                        let vel_y = -speed_var * rand_theta.sin();
                                         
                                         let rand_r = src.radius * rand::random::<f32>().sqrt();
                                         let rand_ang = rand::random::<f32>() * std::f32::consts::TAU;
@@ -3801,7 +5429,8 @@ async fn run() {
                                             speed: speed_var,
                                             last_hit_id: -1i32,
                                             path_idx: 0,
-                                            _pad: [0.0; 2],
+                                            wavelength: min_wavelength + rand::random::<f32>() * (max_wavelength - min_wavelength),
+                                            _pad2: 0.0,
                                             path: [[spawn_pos[0], spawn_pos[1]]; 16],
                                         };
                                         
@@ -3858,8 +5487,8 @@ async fn run() {
                             mod_node_inv_mass: if left_click_mode == LeftClickMode::ModifyArea && modifier_cfg.modify_node {
                                 let mat_mass = materials.get(modifier_cfg.target_mat as usize).map_or(1.0, |m| m.mass);
                                 match modifier_cfg.target_node {
-                                    SpawnNodeMode::Normal => 1.0 / mat_mass,
-                                    SpawnNodeMode::ZeroGravity => 1.0 / mat_mass,
+                                    SpawnNodeMode::Normal => if mat_mass != 0.0 { 1.0 / mat_mass } else { 0.0 },
+                                    SpawnNodeMode::ZeroGravity => if mat_mass != 0.0 { 1.0 / mat_mass } else { 0.0 },
                                     SpawnNodeMode::SemiFixed => modifier_cfg.target_damping,
                                     SpawnNodeMode::Fixed => 0.0,
                                 }
@@ -3882,8 +5511,8 @@ async fn run() {
                             _pad_c: 0,
                             gravity_sources: gravity_sources_arr,
                             materials: {
-                                let mut arr = [MaterialPropsWGSL { base_color: [0.0; 4], color2: [0.0; 4], conn_dist: 0.0, len_break: 0.0, ang_break: 0.0, melt_temp: 0.0, boil_temp: 0.0, flags: 0, surface_tension: 0.0, light_transmission: 0.0, light_reflectivity: 0.0, refractive_index: 0.0, _pad1: 0.0, _pad2: 0.0 }; 16];
-                                for (i, m) in materials.iter().enumerate().take(16) {
+                                let mut arr = [MaterialPropsWGSL { base_color: [0.0; 4], color2: [0.0; 4], conn_dist: 0.0, len_break: 0.0, ang_break: 0.0, melt_temp: 0.0, boil_temp: 0.0, flags: 0, surface_tension: 0.0, light_transmission: 0.0, light_reflectivity: 0.0, refractive_index: 0.0, heat_conduction: 1.0, heat_capacity: 1.0, ref_spectra: [0.0; 8] }; 64];
+                                for (i, m) in materials.iter().enumerate().take(64) {
                                     let is_noisy_legacy = i == 1 || i == 4 || i == 5 || i == 7;
                                     let is_soft_legacy = i == 3 || i == 7;
                                     let boil_legacy = if i == 1 { 2500.0 } else if i == 2 { 3500.0 } else if i == 3 { 600.0 } else if i == 6 { 5930.0 } else if i == 7 { 400.0 } else { 1500.0 };
@@ -3937,8 +5566,26 @@ async fn run() {
                                         light_transmission: lt,
                                         light_reflectivity: lr,
                                         refractive_index: ri,
-                                        _pad1: 0.0,
-                                        _pad2: 0.0,
+                                        heat_conduction: m.heat_conduction.unwrap_or(1.0),
+                                        heat_capacity: m.specific_heat_capacity.unwrap_or(1.0),
+                                        ref_spectra: {
+                                            let mut s = [0.0; 8];
+                                            if let Some(ranges) = &m.reflectance_spectrum {
+                                                if ranges.is_empty() {
+                                                    s[0] = -1.0;
+                                                    s[1] = 9999.0;
+                                                } else {
+                                                    for (idx, &(rmin, rmax)) in ranges.iter().take(4).enumerate() {
+                                                        s[idx * 2] = rmin;
+                                                        s[idx * 2 + 1] = rmax;
+                                                    }
+                                                }
+                                            } else {
+                                                s[0] = -1.0;
+                                                s[1] = 9999.0;
+                                            }
+                                            s
+                                        },
                                     };
                                 }
                                 arr
@@ -3948,11 +5595,15 @@ async fn run() {
                         force_reconnect = 0.0;
 
                         // 物理演算
+                        let mut stats_map_requested = false;
                         if compute_mode == ComputeMode::Gpu {
                             // === GPU Compute Path ===
                             if !is_paused {
                                 let active_wg = (active_particles + 63) / 64;
                                 for sub in 0..substeps {
+                                    if sub == 0 {
+                                        queue.write_buffer(&stats_buf, 0, bytemuck::bytes_of(&0u32));
+                                    }
                                     {
                                         let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                             label: None,
@@ -3993,6 +5644,12 @@ async fn run() {
                                 cp.set_pipeline(pipeline_physics.as_ref().unwrap());
                                 cp.set_bind_group(0, compute_bg.as_ref().unwrap(), &[]);
                                 cp.dispatch_workgroups(wg_x, wg_y, 1);
+                            }
+                            
+                            if !stats_mapping_active {
+                                enc.copy_buffer_to_buffer(&stats_buf, 0, &stats_staging_buf, 0, 4);
+                                stats_mapping_active = true;
+                                stats_map_requested = true;
                             }
                         } else {
                             // === CPU Compute Path ===
@@ -4114,6 +5771,14 @@ async fn run() {
                         last_cursor_world = cursor_world;
 
                         queue.submit(std::iter::once(enc.finish()));
+                        
+                        if stats_map_requested {
+                            let tx = stats_map_tx.clone();
+                            stats_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |res| {
+                                let _ = tx.send(res);
+                            });
+                        }
+                        
                         output.present();
 
                         if pending_gc {
@@ -4129,7 +5794,7 @@ async fn run() {
                     particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
                     device.poll(wgpu::Maintain::Wait);
 
-                    if rx.recv().unwrap().is_ok() {
+                    if matches!(rx.recv(), Ok(Ok(()))) {
                         let particle_view = particle_staging_buf.slice(..particle_size).get_mapped_range();
                         let built_particles: &[Particle] = bytemuck::cast_slice(&particle_view);
                         
@@ -4202,7 +5867,7 @@ async fn run() {
                                 let scale = 128.0 / camera.scene_scale;
                                 for p in active_data {
                                     let px = (p.pos[0] * scale + cx) as i32;
-                                    let py = (p.pos[1] * scale + cy) as i32;
+                                    let py = 255 - (p.pos[1] * scale + cy) as i32;
                                     if px >= 0 && px < 256 && py >= 0 && py < 256 {
                                         let c = match p.mat_type & 0xFF {
                                             0 => [100, 150, 255, 255],
@@ -4325,19 +5990,209 @@ async fn run() {
                         if let Some(pos) = pending_paste_pos.take() {
                             if let Some(blueprint) = &blueprint_clipboard {
                                 if active_particles + blueprint.len() as u32 <= particle_capacity as u32 {
-                                    let mut new_pts = blueprint.clone();
+                                    let mut new_pts = Vec::new();
+                                    let mut local_to_global = Vec::new();
+                                    let mut replaced_indices = Vec::new();
                                     let start_idx = active_particles;
-                                    for p in &mut new_pts {
+                                    
+                                    for mut p in blueprint.clone() {
                                         p.pos[0] += pos[0];
                                         p.pos[1] += pos[1];
+                                        
+                                        let mut replaced = false;
+                                        if let Some((ref mut eps, ref grid)) = existing_replace_state {
+                                            if let Some(idx) = grid.find_closest(p.pos[0], p.pos[1], 0.008, eps) {
+                                                replaced_indices.push((idx, p.clone()));
+                                                local_to_global.push(idx as u32);
+                                                replaced = true;
+                                            }
+                                        }
+                                        
+                                        if !replaced {
+                                            let current_global = start_idx + new_pts.len() as u32;
+                                            local_to_global.push(current_global);
+                                            new_pts.push(p);
+                                        }
+                                    }
+                                    
+                                    if let Some((ref mut eps, _)) = existing_replace_state {
+                                        for (idx, bp_p) in &replaced_indices {
+                                            let world_p = &mut eps[*idx];
+                                            world_p.mat_type = bp_p.mat_type;
+                                            world_p.inv_mass = bp_p.inv_mass;
+                                            world_p.grav_scale = bp_p.grav_scale;
+                                            world_p.vel = [0.0, 0.0];
+                                            world_p.charge = bp_p.charge;
+                                            world_p.temperature = bp_p.temperature;
+                                            
+                                            for &local_l in &bp_p.links {
+                                                if local_l >= 0 && local_l < local_to_global.len() as i32 {
+                                                    let target_global = local_to_global[local_l as usize] as i32;
+                                                    if !world_p.links.contains(&target_global) {
+                                                        if let Some(empty) = world_p.links.iter_mut().find(|l| **l == -1) {
+                                                            *empty = target_global;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            let offset = *idx as u64 * std::mem::size_of::<Particle>() as u64;
+                                            queue.write_buffer(&particle_buf, offset, bytemuck::bytes_of(world_p));
+                                        }
+                                    }
+                                    
+                                    for p in &mut new_pts {
                                         for l in &mut p.links {
-                                            if *l >= 0 {
-                                                *l += start_idx as i32;
+                                            if *l >= 0 && *l < local_to_global.len() as i32 {
+                                                *l = local_to_global[*l as usize] as i32;
+                                            } else {
+                                                *l = -1;
                                             }
                                         }
                                     }
-                                    write_particles_to_gpu(&queue, &particle_buf, start_idx as u64, &new_pts);
-                                    active_particles += new_pts.len() as u32;
+                                    
+                                    if !new_pts.is_empty() {
+                                        write_particles_to_gpu(&queue, &particle_buf, start_idx as u64, &new_pts);
+                                        active_particles += new_pts.len() as u32;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // ===== 逻辑引擎同步执行 =====
+                        if !is_paused {
+                            logic_tick_timer += dt;
+                            if logic_tick_timer >= 0.1 && !logic_mapping_active && active_particles > 0 {
+                                logic_tick_timer = 0.0;
+                                let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                                let copy_size = active_particles as u64 * std::mem::size_of::<Particle>() as u64;
+                                enc.copy_buffer_to_buffer(&particle_buf, 0, &logic_staging_buf, 0, copy_size);
+                                queue.submit(Some(enc.finish()));
+                                let tx = logic_map_tx.clone();
+                                logic_staging_buf.slice(0..copy_size).map_async(wgpu::MapMode::Read, move |res| {
+                                    let _ = tx.send(res);
+                                });
+                                logic_mapping_active = true;
+                                logic_mapping_size = copy_size;
+                            }
+                        }
+                        
+                        if logic_mapping_active || stats_mapping_active {
+                            device.poll(wgpu::Maintain::Poll);
+                            
+                            if logic_mapping_active {
+                                if let Ok(Ok(())) = logic_map_rx.try_recv() {
+                                    let slice = logic_staging_buf.slice(0..logic_mapping_size);
+                                    let data = slice.get_mapped_range();
+                                    let particles_clone: Vec<Particle> = bytemuck::cast_slice(&data).to_vec();
+                                    drop(data);
+                                    logic_staging_buf.unmap();
+                                    logic_mapping_active = false;
+                                    
+                                    let _ = logic_task_tx.send((particles_clone, materials.clone()));
+                                }
+                            }
+                            
+                            if stats_mapping_active {
+                                if let Ok(Ok(())) = stats_map_rx.try_recv() {
+                                    let data = stats_staging_buf.slice(..).get_mapped_range();
+                                    alive_photons = *bytemuck::from_bytes::<u32>(&data);
+                                    drop(data);
+                                    stats_staging_buf.unmap();
+                                    stats_mapping_active = false;
+                                }
+                            }
+                        }
+                        
+                        while let Ok(events) = logic_result_rx.try_recv() {
+                            for ev in events {
+                                match ev {
+                                    LogicEvent::Mutate { id, new_mat } => {
+                                        if id < active_particles {
+                                            let offset = id as u64 * std::mem::size_of::<Particle>() as u64 + 52; // mat_type offset
+                                            queue.write_buffer(&particle_buf, offset, bytemuck::bytes_of(&new_mat));
+                                        }
+                                    },
+                                    LogicEvent::Delete { id } => {
+                                        if id < active_particles {
+                                            let offset = id as u64 * std::mem::size_of::<Particle>() as u64 + 52; // mat_type offset
+                                            let dead_mat = 0x40000000u32;
+                                            queue.write_buffer(&particle_buf, offset, bytemuck::bytes_of(&dead_mat));
+                                            
+                                            let links_offset = id as u64 * std::mem::size_of::<Particle>() as u64 + 16; // links offset
+                                            let empty_links = [-1i32; 6];
+                                            queue.write_buffer(&particle_buf, links_offset, bytemuck::bytes_of(&empty_links));
+                                        }
+                                    },
+                                    LogicEvent::BreakLinks { id } => {
+                                        if id < active_particles {
+                                            let offset = id as u64 * std::mem::size_of::<Particle>() as u64 + 16; // links offset
+                                            let empty_links = [-1i32; 6];
+                                            queue.write_buffer(&particle_buf, offset, bytemuck::bytes_of(&empty_links));
+                                        }
+                                    },
+                                    LogicEvent::ChangeTemp { id, new_temp } => {
+                                        if id < active_particles {
+                                            let offset = id as u64 * std::mem::size_of::<Particle>() as u64 + 48; // temp offset
+                                            queue.write_buffer(&particle_buf, offset, bytemuck::bytes_of(&new_temp));
+                                        }
+                                    },
+                                    LogicEvent::ChangeCharge { id, new_charge } => {
+                                        if id < active_particles {
+                                            let offset = id as u64 * std::mem::size_of::<Particle>() as u64 + 40; // charge offset
+                                            queue.write_buffer(&particle_buf, offset, bytemuck::bytes_of(&new_charge));
+                                        }
+                                    },
+                                    LogicEvent::Spawn { mat_type, pos } => {
+                                        if active_particles < particle_capacity {
+                                            let inv_mass = if let Some(m) = materials.get(mat_type as usize) {
+                                                if m.mass != 0.0 { 1.0 / m.mass } else { 0.0 }
+                                            } else { 1.0 };
+                                            let p = Particle {
+                                                pos,
+                                                vel: [0.0, 0.0],
+                                                links: [-1; 6],
+                                                charge: 0.0,
+                                                angle: 0.0,
+                                                temperature: 20.0,
+                                                mat_type,
+                                                inv_mass,
+                                                grav_scale: 1.0,
+                                            };
+                                            write_particles_to_gpu(&queue, &particle_buf, active_particles as u64, &[p]);
+                                            active_particles += 1;
+                                        }
+                                    },
+                                    LogicEvent::EmitPhoton { pos, angle, params } => {
+                                        for _ in 0..params.count {
+                                            let speed_var = params.speed * (1.0 + (rand::random::<f32>() - 0.5) * 0.002);
+                                            let vel_x = speed_var * angle.cos();
+                                            let vel_y = -speed_var * angle.sin();
+                                            
+                                            let wl = if !params.wavelength_ranges.is_empty() {
+                                                let range = &params.wavelength_ranges[rand::random::<usize>() % params.wavelength_ranges.len()];
+                                                range.0 + rand::random::<f32>() * (range.1 - range.0)
+                                            } else {
+                                                500.0
+                                            };
+                                            
+                                            let ph = Photon {
+                                                pos,
+                                                vel: [vel_x, vel_y],
+                                                energy: params.energy,
+                                                lifetime: params.lifetime,
+                                                max_lifetime: params.lifetime,
+                                                speed: speed_var,
+                                                last_hit_id: -1,
+                                                path_idx: 0,
+                                                wavelength: wl,
+                                                _pad2: 0.0,
+                                                path: [[pos[0], pos[1]]; 16],
+                                            };
+                                            queue.write_buffer(&photon_buf, (photon_head as u64) * std::mem::size_of::<Photon>() as u64, bytemuck::bytes_of(&ph));
+                                            photon_head = (photon_head + 1) % MAX_PHOTONS;
+                                            active_photons = (active_photons + 1).min(MAX_PHOTONS);
+                                        }
+                                    }
                                 }
                             }
                         }

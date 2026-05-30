@@ -42,8 +42,9 @@ struct MaterialProps {
     light_transmission: f32,
     light_reflectivity: f32,
     refractive_index: f32,
-    _pad1: f32,
-    _pad2: f32,
+    heat_conduction: f32,
+    heat_capacity: f32,
+    ref_spectra: array<vec4<f32>, 2>,
 }
 
 struct SimParams {
@@ -80,7 +81,7 @@ struct SimParams {
     _pad_b: u32,
     _pad_c: u32,
     gravity_sources: array<vec4<f32>, 8>,
-    materials: array<MaterialProps, 16>,
+    materials: array<MaterialProps, 64>,
 }
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
