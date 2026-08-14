@@ -10,6 +10,15 @@ struct Particle {
     grav_scale: f32,
 }
 
+struct PhaseColor {
+    color: vec4<f32>,
+    color2: vec4<f32>,
+    min_temp: f32,
+    max_temp: f32,
+    flags: u32,
+    _pad: f32,
+}
+
 struct MaterialProps {
     base_color: vec4<f32>,
     color2: vec4<f32>,
@@ -26,6 +35,11 @@ struct MaterialProps {
     heat_conduction: f32,
     heat_capacity: f32,
     ref_spectra: array<vec4<f32>, 2>,
+    phase_colors: array<PhaseColor, 10>,
+    num_phase_colors: u32,
+    _pad_phase1: u32,
+    _pad_phase2: u32,
+    _pad_phase3: u32,
 }
 
 struct SimParams {

@@ -20,6 +20,15 @@ struct Camera {
     _p3: f32,
 }
 
+struct PhaseColor {
+    color: vec4<f32>,
+    color2: vec4<f32>,
+    min_temp: f32,
+    max_temp: f32,
+    flags: u32,
+    _pad: f32,
+}
+
 struct MaterialProps {
     base_color: vec4<f32>,
     color2: vec4<f32>,
@@ -36,6 +45,11 @@ struct MaterialProps {
     heat_conduction: f32,
     heat_capacity: f32,
     ref_spectra: array<vec4<f32>, 2>,
+    phase_colors: array<PhaseColor, 10>,
+    num_phase_colors: u32,
+    _pad_phase1: u32,
+    _pad_phase2: u32,
+    _pad_phase3: u32,
 }
 
 struct SimParams {
@@ -79,6 +93,33 @@ struct SimParams {
 @group(0) @binding(1) var<uniform> camera: Camera;
 @group(0) @binding(2) var<uniform> params: SimParams;
 @group(0) @binding(3) var<storage, read> light_buf: array<i32>;
+
+fn get_particle_base_color(m_type: u32, temp: f32, id: u32) -> vec4<f32> {
+    var orig_color = params.materials[m_type].base_color;
+    var color2 = params.materials[m_type].color2;
+    var is_noisy = (params.materials[m_type].flags & 2u) != 0u;
+
+    // Evaluate phase transitions
+    for (var i = 0u; i < params.materials[m_type].num_phase_colors; i = i + 1u) {
+        let pc = params.materials[m_type].phase_colors[i];
+        if (temp >= pc.min_temp && temp <= pc.max_temp) {
+            orig_color = pc.color;
+            if ((pc.flags & 1u) != 0u) {
+                color2 = pc.color2;
+                is_noisy = true;
+            } else {
+                is_noisy = false;
+            }
+            break;
+        }
+    }
+
+    if (is_noisy) {
+        let noise = fract(sin(f32(id) * 12.9898 + 78.233) * 43758.5453);
+        orig_color = vec4<f32>(mix(orig_color.rgb, color2.rgb, noise), orig_color.a);
+    }
+    return orig_color;
+}
 
 
 fn apply_temperature_color(base_color: vec3<f32>, temp: f32) -> vec3<f32> {
@@ -226,12 +267,7 @@ fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -
     let material = params.materials[m_type];
     let boil_pt = material.boil_temp;
 
-    var orig_color = material.base_color;
-    let is_noisy = (material.flags & 2u) != 0u;
-    if (is_noisy) {
-        let noise = fract(sin(f32(iid) * 12.9898 + 78.233) * 43758.5453);
-        orig_color = vec4<f32>(mix(orig_color.rgb, material.color2.rgb, noise), orig_color.a);
-    }
+    let orig_color = get_particle_base_color(m_type, p.temperature, iid);
 
     // Calculate dynamic runtime colors purely for rendering
     let speed = length(p.vel);
@@ -328,24 +364,19 @@ struct LinkVertexOutput {
 
 @vertex
 fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> LinkVertexOutput {
-    var p = particles[iid];
     var out: LinkVertexOutput;
-    
-    if ((p.mat_type & 0x40000000u) != 0u) {
-        out.clip_position = vec4<f32>(0.0);
+    out.clip_position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    out.color = vec4<f32>(0.0);
+    out.uv = vec2<f32>(0.0);
+
+    let k = vid / 6u;
+    let neighbor_id = particles[iid].links[k];
+    if (neighbor_id == -1 || u32(neighbor_id) <= iid) {
         return out;
     }
-    
-    let link_idx = vid / 6u;
-    let quad_vid = vid % 6u;
-    
-    let neighbor_id = p.links[link_idx];
 
-    if (neighbor_id == -1 || neighbor_id < 0 || i32(iid) >= neighbor_id || u32(neighbor_id) >= 100000000u) {
-        out.clip_position = vec4<f32>(0.0);
-        return out; 
-    }
-    
+    var p = particles[iid];
+    let quad_vid = vid % 6u;
     let other = particles[neighbor_id];
     
     var radius = 0.004;
@@ -382,11 +413,7 @@ fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u
 
     let m1_id = p.mat_type & 0xFFu;
     let mat1 = params.materials[m1_id];
-    var c1 = mat1.base_color;
-    if ((mat1.flags & 2u) != 0u) {
-        let noise = fract(sin(f32(iid) * 12.9898 + 78.233) * 43758.5453);
-        c1 = vec4<f32>(mix(c1.rgb, mat1.color2.rgb, noise), c1.a);
-    }
+    let c1 = get_particle_base_color(m1_id, p.temperature, iid);
     
     let light_raw1 = f32(light_buf[iid]) / 10000.0;
     let base_brightness1 = mix(0.05, 1.0, clamp(light_raw1 / 0.1, 0.0, 1.0));
@@ -394,12 +421,8 @@ fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u
     
     let m2_id = other.mat_type & 0xFFu;
     let mat2 = params.materials[m2_id];
-    var c2 = mat2.base_color;
-    if ((mat2.flags & 2u) != 0u) {
-        let noise = fract(sin(f32(neighbor_id) * 12.9898 + 78.233) * 43758.5453);
-        c2 = vec4<f32>(mix(c2.rgb, mat2.color2.rgb, noise), c2.a);
-    }
-
+    let c2 = get_particle_base_color(m2_id, other.temperature, u32(neighbor_id));
+    
     let light_raw2 = f32(light_buf[neighbor_id]) / 10000.0;
     let base_brightness2 = mix(0.05, 1.0, clamp(light_raw2 / 0.1, 0.0, 1.0));
     let c2_dyn = apply_dynamic_effects(c2, length(other.vel), other.charge, other.temperature, m2_id, base_brightness2, mat2.boil_temp);

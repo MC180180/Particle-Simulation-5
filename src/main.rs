@@ -1,5 +1,170 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
+
+#[cfg(target_os = "windows")]
+mod win7_shim {
+    use super::*;
+    static INIT: AtomicBool = AtomicBool::new(false);
+    static FUNC_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+    #[allow(non_snake_case)]
+    pub unsafe extern "system" fn win7_GetSystemTimePreciseAsFileTime(lp_system_time_as_file_time: *mut std::ffi::c_void) {
+        if !INIT.load(Ordering::Relaxed) {
+            let h_kernel32 = windows_sys::Win32::System::LibraryLoader::GetModuleHandleA(b"kernel32.dll\0".as_ptr());
+            if h_kernel32 != 0 {
+                let proc_ptr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_kernel32, b"GetSystemTimePreciseAsFileTime\0".as_ptr());
+                if let Some(proc_fn) = proc_ptr {
+                    FUNC_PTR.store(proc_fn as *mut std::ffi::c_void, Ordering::Relaxed);
+                }
+            }
+            INIT.store(true, Ordering::Relaxed);
+        }
+        
+        let ptr = FUNC_PTR.load(Ordering::Relaxed);
+        if !ptr.is_null() {
+            let real_fn: unsafe extern "system" fn(*mut std::ffi::c_void) = std::mem::transmute(ptr);
+            real_fn(lp_system_time_as_file_time);
+        } else {
+            windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(
+                lp_system_time_as_file_time as *mut _
+            );
+        }
+    }
+
+    static WAIT_INIT: AtomicBool = AtomicBool::new(false);
+    static WAIT_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+    static WAKE_SINGLE_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+    static WAKE_ALL_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+    fn init_synch_ptrs() {
+        if !WAIT_INIT.load(Ordering::Relaxed) {
+            unsafe {
+                let h_synch = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"api-ms-win-core-synch-l1-2-0.dll\0".as_ptr());
+                if h_synch != 0 {
+                    if let Some(p) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_synch, b"WaitOnAddress\0".as_ptr()) {
+                        WAIT_PTR.store(p as *mut std::ffi::c_void, Ordering::Relaxed);
+                    }
+                    if let Some(p) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_synch, b"WakeByAddressSingle\0".as_ptr()) {
+                        WAKE_SINGLE_PTR.store(p as *mut std::ffi::c_void, Ordering::Relaxed);
+                    }
+                    if let Some(p) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_synch, b"WakeByAddressAll\0".as_ptr()) {
+                        WAKE_ALL_PTR.store(p as *mut std::ffi::c_void, Ordering::Relaxed);
+                    }
+                }
+            }
+            WAIT_INIT.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[allow(non_snake_case)]
+    pub unsafe extern "system" fn win7_WaitOnAddress(
+        address: *const std::ffi::c_void,
+        compare_address: *const std::ffi::c_void,
+        address_size: usize,
+        dw_milliseconds: u32,
+    ) -> i32 {
+        init_synch_ptrs();
+        let ptr = WAIT_PTR.load(Ordering::Relaxed);
+        if !ptr.is_null() {
+            let real_fn: unsafe extern "system" fn(*const std::ffi::c_void, *const std::ffi::c_void, usize, u32) -> i32 = std::mem::transmute(ptr);
+            real_fn(address, compare_address, address_size, dw_milliseconds)
+        } else {
+            let match_val = match address_size {
+                1 => *(address as *const u8) == *(compare_address as *const u8),
+                2 => *(address as *const u16) == *(compare_address as *const u16),
+                4 => *(address as *const u32) == *(compare_address as *const u32),
+                8 => *(address as *const u64) == *(compare_address as *const u64),
+                _ => false,
+            };
+            if match_val {
+                std::thread::sleep(std::time::Duration::from_millis(if dw_milliseconds == 0 { 0 } else { 1 }));
+            }
+            1
+        }
+    }
+
+    #[allow(non_snake_case)]
+    pub unsafe extern "system" fn win7_WakeByAddressSingle(address: *const std::ffi::c_void) {
+        init_synch_ptrs();
+        let ptr = WAKE_SINGLE_PTR.load(Ordering::Relaxed);
+        if !ptr.is_null() {
+            let real_fn: unsafe extern "system" fn(*const std::ffi::c_void) = std::mem::transmute(ptr);
+            real_fn(address);
+        }
+    }
+
+    #[allow(non_snake_case)]
+    pub unsafe extern "system" fn win7_WakeByAddressAll(address: *const std::ffi::c_void) {
+        init_synch_ptrs();
+        let ptr = WAKE_ALL_PTR.load(Ordering::Relaxed);
+        if !ptr.is_null() {
+            let real_fn: unsafe extern "system" fn(*const std::ffi::c_void) = std::mem::transmute(ptr);
+            real_fn(address);
+        }
+    }
+
+    static PRNG_INIT: AtomicBool = AtomicBool::new(false);
+    static PRNG_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+    #[allow(non_snake_case)]
+    pub unsafe extern "system" fn win7_ProcessPrng(pb_buffer: *mut u8, cb_buffer: usize) -> i32 {
+        if !PRNG_INIT.load(Ordering::Relaxed) {
+            let h_bcrypt_prim = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"bcryptprimitives.dll\0".as_ptr());
+            if h_bcrypt_prim != 0 {
+                if let Some(p) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_bcrypt_prim, b"ProcessPrng\0".as_ptr()) {
+                    PRNG_PTR.store(p as *mut std::ffi::c_void, Ordering::Relaxed);
+                }
+            }
+            PRNG_INIT.store(true, Ordering::Relaxed);
+        }
+
+        let ptr = PRNG_PTR.load(Ordering::Relaxed);
+        if !ptr.is_null() {
+            let real_fn: unsafe extern "system" fn(*mut u8, usize) -> i32 = std::mem::transmute(ptr);
+            real_fn(pb_buffer, cb_buffer)
+        } else {
+            // Windows 7 Fallback using BCryptGenRandom from bcrypt.dll
+            type BCryptGenRandomFn = unsafe extern "system" fn(*mut std::ffi::c_void, *mut u8, u32, u32) -> i32;
+            let h_bcrypt = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"bcrypt.dll\0".as_ptr());
+            if h_bcrypt != 0 {
+                if let Some(proc_fn) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_bcrypt, b"BCryptGenRandom\0".as_ptr()) {
+                    let bcrypt_fn: BCryptGenRandomFn = std::mem::transmute(proc_fn);
+                    // BCRYPT_USE_SYSTEM_PREFERRED_RNG = 0x00000002
+                    let status = bcrypt_fn(std::ptr::null_mut(), pb_buffer, cb_buffer as u32, 0x00000002);
+                    if status == 0 {
+                        return 1;
+                    }
+                }
+            }
+            0
+        }
+    }
+
+}
+
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut __imp_GetSystemTimePreciseAsFileTime: unsafe extern "system" fn(*mut std::ffi::c_void) = win7_shim::win7_GetSystemTimePreciseAsFileTime;
+
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut __imp_WaitOnAddress: unsafe extern "system" fn(*const std::ffi::c_void, *const std::ffi::c_void, usize, u32) -> i32 = win7_shim::win7_WaitOnAddress;
+
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut __imp_WakeByAddressSingle: unsafe extern "system" fn(*const std::ffi::c_void) = win7_shim::win7_WakeByAddressSingle;
+
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut __imp_WakeByAddressAll: unsafe extern "system" fn(*const std::ffi::c_void) = win7_shim::win7_WakeByAddressAll;
+
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut __imp_ProcessPrng: unsafe extern "system" fn(*mut u8, usize) -> i32 = win7_shim::win7_ProcessPrng;
+
+
 use bytemuck::{Pod, Zeroable};
 use egui::Context;
 use egui_wgpu::Renderer;
@@ -58,6 +223,21 @@ struct ParticleGrid {
     grid: std::collections::HashMap<(i32, i32), Vec<usize>>,
 }
 impl ParticleGrid {
+    fn new_around(particles: &[Particle], cell_size: f32, center: [f32; 2], radius: f32) -> Self {
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
+        let min_x = center[0] - radius;
+        let max_x = center[0] + radius;
+        let min_y = center[1] - radius;
+        let max_y = center[1] + radius;
+        for (i, p) in particles.iter().enumerate() {
+            if p.pos[0] >= min_x && p.pos[0] <= max_x && p.pos[1] >= min_y && p.pos[1] <= max_y {
+                let cx = (p.pos[0] / cell_size).floor() as i32;
+                let cy = (p.pos[1] / cell_size).floor() as i32;
+                grid.entry((cx, cy)).or_default().push(i);
+            }
+        }
+        Self { cell_size, grid }
+    }
     fn new(particles: &[Particle], cell_size: f32) -> Self {
         let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
         for (i, p) in particles.iter().enumerate() {
@@ -313,6 +493,17 @@ pub struct MaterialDef {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct PhaseColorWGSL {
+    pub color: [f32; 4],
+    pub color2: [f32; 4],
+    pub min_temp: f32,
+    pub max_temp: f32,
+    pub flags: u32,
+    pub _pad: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct MaterialPropsWGSL {
     pub base_color: [f32; 4],
     pub color2: [f32; 4],
@@ -329,6 +520,11 @@ pub struct MaterialPropsWGSL {
     pub heat_conduction: f32,
     pub heat_capacity: f32,
     pub ref_spectra: [f32; 8],
+    pub phase_colors: [PhaseColorWGSL; 10],
+    pub num_phase_colors: u32,
+    pub _pad_phase1: u32,
+    pub _pad_phase2: u32,
+    pub _pad_phase3: u32,
 }
 
 
@@ -828,13 +1024,76 @@ fn spawn_rect(
     }
 }
 
+
+// ============================================================================
+// Windows 7 / 8 Compatibility Fallbacks for Win8+ / Win10+ APIs
+// Prevents "无法定位程序输入点 GetSystemTimePreciseAsFileTime 于动态链接库 kernel32.dll 上"
+// ============================================================================
+#[cfg(all(target_os = "windows", target_env = "msvc"))]
+mod win7_compatibility {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::Once;
+
+    type FnGetSystemTimePreciseAsFileTime = unsafe extern "system" fn(*mut FILETIME);
+
+    static PRECISION_TIME_FN: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+    static INIT_PRECISION_TIME: Once = Once::new();
+
+    #[no_mangle]
+    pub unsafe extern "system" fn GetSystemTimePreciseAsFileTime(lp_file_time: *mut FILETIME) {
+        INIT_PRECISION_TIME.call_once(|| {
+            let h_module = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
+            if h_module != 0 {
+                let proc_addr = GetProcAddress(h_module, b"GetSystemTimePreciseAsFileTime\0".as_ptr());
+                if let Some(addr) = proc_addr {
+                    PRECISION_TIME_FN.store(addr as *mut _, Ordering::Relaxed);
+                }
+            }
+        });
+
+        let ptr = PRECISION_TIME_FN.load(Ordering::Relaxed);
+        if !ptr.is_null() {
+            let f: FnGetSystemTimePreciseAsFileTime = std::mem::transmute(ptr);
+            f(lp_file_time);
+        } else {
+            // Windows 7 Fallback: Standard millisecond-resolution system time
+            GetSystemTimeAsFileTime(lp_file_time);
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn WaitOnAddress(
+        _address: *const std::ffi::c_void,
+        _compare_address: *const std::ffi::c_void,
+        _address_size: usize,
+        _milliseconds: u32,
+    ) -> i32 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        1
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn WakeByAddressSingle(_address: *const std::ffi::c_void) {}
+
+    #[no_mangle]
+    pub unsafe extern "system" fn WakeByAddressAll(_address: *const std::ffi::c_void) {}
+}
+
+#[cfg(target_os = "android")]
+const DESIRED_PARTICLES: u32 = 100_000;
+#[cfg(not(target_os = "android"))]
 const DESIRED_PARTICLES: u32 = 25_000_000;
 const GRID_W: u32 = 1024;
 const GRID_H: u32 = 1024;
 
+#[cfg(not(target_os = "android"))]
 fn main() {
     let result = std::panic::catch_unwind(|| {
-        pollster::block_on(run());
+        let event_loop = EventLoop::new().unwrap();
+        run_with_event_loop(event_loop);
     });
     if let Err(e) = result {
         let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -854,6 +1113,62 @@ fn main() {
         }
     }
 }
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+fn android_main(app: android_activity::AndroidApp) {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+
+    // 初始化 Android logcat 日志 - 所有 log::info/error 都会输出到 logcat
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Debug)
+            .with_tag("ParticleSim"),
+    );
+
+    log::info!("=== ParticleSim android_main 启动 ===");
+
+    // 设置 panic hook 让崩溃信息出现在 logcat 中
+    std::panic::set_hook(Box::new(|panic_info| {
+        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown panic".to_string()
+        };
+        let location = if let Some(loc) = panic_info.location() {
+            format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
+        } else {
+            "unknown location".to_string()
+        };
+        log::error!("!!! PANIC at {} : {}", location, msg);
+    }));
+
+    log::info!("开始创建 EventLoop...");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut builder = winit::event_loop::EventLoopBuilder::new();
+        builder.with_android_app(app);
+        log::info!("EventLoop builder 就绪, 开始 build...");
+        let event_loop = builder.build().unwrap();
+        log::info!("EventLoop 创建成功, 启动 run_with_event_loop...");
+        run_with_event_loop(event_loop);
+    }));
+    if let Err(e) = result {
+        let msg = if let Some(s) = e.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = e.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown error".to_string()
+        };
+        log::error!("!!! android_main catch_unwind 捕获错误: {}", msg);
+    }
+    log::info!("=== ParticleSim android_main 退出 ===");
+}
+
+#[cfg(target_os = "android")]
+fn main() {}
 
 fn render_inline_markdown(ui: &mut egui::Ui, text: &str) {
     let mut job = egui::text::LayoutJob::default();
@@ -1046,8 +1361,7 @@ fn render_markdown(ui: &mut egui::Ui, text: &str) {
     }
 }
 
-async fn run() {
-    let event_loop = EventLoop::new().unwrap();
+fn run_with_event_loop(event_loop: EventLoop<()>) {
     let window_icon = image::load_from_memory(include_bytes!("icon.ico")).ok().and_then(|img| {
         // Windows 任务栏图标最大支持 256x256
         let img = img.resize(256, 256, image::imageops::FilterType::Lanczos3);
@@ -1072,117 +1386,134 @@ async fn run() {
     let window = Arc::new(builder.build(&event_loop).unwrap());
     window.set_ime_allowed(true);
 
-    // ===== GPU 后端选择（优先 Vulkan，其次 DX12）=====
-    // FXC (DX11) 不支持我们 compute shader 中的动态数组索引，必须用 Vulkan 或 DX12+DXC
+    // ===== GPU 后端选择（优先 Vulkan，其次 OpenGLES/DX12）=====
     fn show_gpu_error(msg: &str) {
         eprintln!("{}", msg);
         #[cfg(target_os = "windows")]
         {
-            let text: Vec<u16> = format!("{}\0", msg).encode_utf16().collect();
-            let title: Vec<u16> = "粒子模拟 5 - GPU 错误\0".encode_utf16().collect();
+            let text: Vec<u16> = format!("{} ", msg).encode_utf16().collect();
+            let title: Vec<u16> = "粒子模拟 5 - GPU 错误 ".encode_utf16().collect();
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(0, text.as_ptr(), title.as_ptr(), 0x10); }
         }
     }
 
-    // 按优先级尝试不同的后端 (GPU compute 完整支持)
-    let gpu_backends: &[(wgpu::Backends, wgpu::Dx12Compiler, &str)] = &[
-        (wgpu::Backends::VULKAN, wgpu::Dx12Compiler::Fxc, "Vulkan"),
-        (wgpu::Backends::DX12, wgpu::Dx12Compiler::Dxc { dxil_path: None, dxc_path: None }, "DX12+DXC"),
-        (wgpu::Backends::DX12, wgpu::Dx12Compiler::Fxc, "DX12+FXC"),
-    ];
+    let (_instance, mut surface_opt, adapter, found_backend_name, device, queue, compute_mode) = pollster::block_on(async {
+        #[cfg(not(target_os = "android"))]
+        let gpu_backends: &[(wgpu::Backends, wgpu::Dx12Compiler, &str)] = &[
+            (wgpu::Backends::VULKAN, wgpu::Dx12Compiler::Fxc, "Vulkan"),
+            (wgpu::Backends::GL, wgpu::Dx12Compiler::Fxc, "OpenGLES"),
+            (wgpu::Backends::PRIMARY, wgpu::Dx12Compiler::Fxc, "Primary"),
+            (wgpu::Backends::DX12, wgpu::Dx12Compiler::Dxc { dxil_path: None, dxc_path: None }, "DX12+DXC"),
+            (wgpu::Backends::DX12, wgpu::Dx12Compiler::Fxc, "DX12+FXC"),
+        ];
 
-    let mut found: Option<(wgpu::Instance, wgpu::Surface, wgpu::Adapter, &str)> = None;
-    let mut compute_mode = ComputeMode::Gpu;
+        #[cfg(target_os = "android")]
+        let gpu_backends: &[(wgpu::Backends, wgpu::Dx12Compiler, &str)] = &[
+            (wgpu::Backends::VULKAN, wgpu::Dx12Compiler::Fxc, "Vulkan"),
+            (wgpu::Backends::GL, wgpu::Dx12Compiler::Fxc, "OpenGLES"),
+        ];
 
-    for (backend, dx12_compiler, name) in gpu_backends {
-        let inst = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: *backend,
-            dx12_shader_compiler: dx12_compiler.clone(),
-            ..Default::default()
-        });
-        if let Ok(surf) = inst.create_surface(window.clone()) {
+        let mut found: Option<(wgpu::Instance, Option<wgpu::Surface>, wgpu::Adapter, &'static str)> = None;
+        let mut comp_mode = ComputeMode::Gpu;
+
+        for (backend, dx12_compiler, name) in gpu_backends {
+            let inst = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: *backend,
+                dx12_shader_compiler: dx12_compiler.clone(),
+                ..Default::default()
+            });
+            #[cfg(not(target_os = "android"))]
+            let surf_opt = inst.create_surface(window.clone()).ok();
+            #[cfg(target_os = "android")]
+            let surf_opt: Option<wgpu::Surface> = None;
+
             if let Some(adap) = inst
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surf),
+                    compatible_surface: surf_opt.as_ref(),
                     force_fallback_adapter: false,
                 })
                 .await
             {
                 println!("GPU 后端: {} - {}", name, adap.get_info().name);
-                found = Some((inst, surf, adap, name));
+                found = Some((inst, surf_opt, adap, *name));
                 break;
             }
+            println!("后端 {} 不可用，尝试下一个...", name);
         }
-        println!("后端 {} 不可用，尝试下一个...", name);
-    }
 
-    // GPU 后端全部失败 → 尝试 CPU 保底模式
-    if found.is_none() {
-        println!("GPU compute 不可用，尝试 CPU 保底模式...");
-        let inst = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-        if let Ok(surf) = inst.create_surface(window.clone()) {
+        if found.is_none() {
+            println!("GPU compute 不可用，尝试 CPU 保底模式...");
+            let inst = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::all(),
+                ..Default::default()
+            });
+            #[cfg(not(target_os = "android"))]
+            let surf_opt = inst.create_surface(window.clone()).ok();
+            #[cfg(target_os = "android")]
+            let surf_opt: Option<wgpu::Surface> = None;
+
             if let Some(adap) = inst
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surf),
+                    compatible_surface: surf_opt.as_ref(),
                     force_fallback_adapter: false,
                 })
                 .await
             {
-                #[cfg(target_os = "windows")]
-                {
-                    let gpu_name_str = adap.get_info().name.clone();
-                    let msg = format!(
-                        "您的显卡 ({}) 不支持 GPU Compute Shader。\n\n将使用 CPU 计算模式（性能较低，粒子上限 64K）。\n\n是否继续？\0",
-                        gpu_name_str
-                    );
-                    let wmsg: Vec<u16> = msg.encode_utf16().collect();
-                    let wtitle: Vec<u16> = "粒子模拟 5 - CPU 模式\0".encode_utf16().collect();
-                    let result = unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                            0, wmsg.as_ptr(), wtitle.as_ptr(), 0x01 | 0x30
-                        )
-                    };
-                    if result != 1 {
-                        std::process::exit(0);
+                    #[cfg(target_os = "windows")]
+                    {
+                        let gpu_name_str = adap.get_info().name.clone();
+                        let msg = format!(
+                            "您的显卡 ({}) 不支持 GPU Compute Shader。\n\n将使用 CPU 计算模式（性能较低，粒子上限 64K）。\n\n是否继续？\0",
+                            gpu_name_str
+                        );
+                        let wmsg: Vec<u16> = msg.encode_utf16().collect();
+                        let wtitle: Vec<u16> = "粒子模拟 5 - CPU 模式\0".encode_utf16().collect();
+                        let result = unsafe {
+                            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                                0, wmsg.as_ptr(), wtitle.as_ptr(), 0x01 | 0x30
+                            )
+                        };
+                        if result != 1 {
+                            std::process::exit(0);
+                        }
                     }
+                    println!("CPU 模式激活: {}", adap.get_info().name);
+                    comp_mode = ComputeMode::Cpu;
+                    found = Some((inst, surf_opt, adap, "CPU"));
                 }
-                println!("CPU 模式激活: {}", adap.get_info().name);
-                compute_mode = ComputeMode::Cpu;
-                found = Some((inst, surf, adap, "CPU"));
+        }
+
+        let (inst, surf, adap, found_name) = match found {
+            Some(f) => f,
+            None => {
+                show_gpu_error("无法找到任何可用的 GPU 适配器。\n\n请确保已安装显卡驱动程序。");
+                std::process::exit(1);
             }
-        }
-    }
+        };
 
-    let (_instance, surface, adapter, found_backend_name) = match found {
-        Some(f) => f,
-        None => {
-            show_gpu_error("无法找到任何可用的 GPU 适配器。\n\n请确保已安装显卡驱动程序。");
-            std::process::exit(1);
-        }
-    };
+        let (dev, q) = match adap
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::empty(),
+                    required_limits: adap.limits(),
+                },
+                None,
+            )
+            .await
+        {
+            Ok(dq) => dq,
+            Err(e) => {
+                show_gpu_error(&format!("GPU 设备创建失败 ({}):\n{}\n\n请尝试更新显卡驱动程序。", found_name, e));
+                std::process::exit(1);
+            }
+        };
 
-    let (device, queue) = match adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: adapter.limits(),
-            },
-            None,
-        )
-        .await
-    {
-        Ok(dq) => dq,
-        Err(e) => {
-            show_gpu_error(&format!("GPU 设备创建失败 ({}):\n{}\n\n请尝试更新显卡驱动程序。", found_backend_name, e));
-            std::process::exit(1);
-        }
-    };
+        (inst, surf, adap, found_name, dev, q, comp_mode)
+    });
+
 
     // ===== 获取显卡信息 =====
     let adapter_info = adapter.get_info();
@@ -1234,13 +1565,16 @@ async fn run() {
     println!("实际粒子上限: {} (期望: {}, 硬件上限: {})", num_particles, DESIRED_PARTICLES, gpu_max_particles);
 
     let size = window.inner_size();
-    let caps = surface.get_capabilities(&adapter);
-    let format = caps
-        .formats
-        .iter()
-        .find(|f| f.is_srgb())
-        .copied()
-        .unwrap_or(caps.formats[0]);
+    let format = if let Some(surf) = &surface_opt {
+        let caps = surf.get_capabilities(&adapter);
+        caps.formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(caps.formats[0])
+    } else {
+        wgpu::TextureFormat::Rgba8UnormSrgb // Android fallback
+    };
     let mut config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -1248,10 +1582,12 @@ async fn run() {
         height: size.height,
         present_mode: wgpu::PresentMode::AutoVsync,
         desired_maximum_frame_latency: 2,
-        alpha_mode: caps.alpha_modes[0],
+        alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![],
     };
-    surface.configure(&device, &config);
+    if let Some(surf) = &surface_opt {
+        surf.configure(&device, &config);
+    }
 
     // ===== Egui 鍒濆鍖?=====
     let egui_context = Context::default();
@@ -1663,7 +1999,8 @@ async fn run() {
     let mut right_pressed = false;
     let mut last_cursor: Option<[f64; 2]> = None;
 
-    let mut active_particles: u32 = 0; // 璧锋棤绮?
+    let mut active_particles: u32 = 0;
+
     let mut active_photons: u32 = 0;
     let mut photon_head: u32 = 0;
     let mut left_click_mode = LeftClickMode::DragForce;
@@ -1734,7 +2071,7 @@ async fn run() {
     let mut world_sources: Vec<WorldSource> = Vec::new();
     let mut next_source_id = 1u32;
 
-    let materials_file = std::fs::read_to_string("materials.json").unwrap_or_else(|_| "[]".to_string());
+    let materials_file = std::fs::read_to_string("materials.json").unwrap_or_else(|_| include_str!("../materials.json").to_string());
     let mut source_presets: Vec<SourcePreset> = match std::fs::read_to_string("source_presets.json") {
         Ok(json) => serde_json::from_str(&json).unwrap_or_else(|_| Vec::new()),
         Err(_) => Vec::new(),
@@ -1826,8 +2163,8 @@ async fn run() {
     let _ = std::fs::create_dir_all("blueprints");
 
     // ===== 启动画面状态 =====
-    let mut splash_active = true;
-    let mut splash_fade_start: Option<std::time::Instant> = None;
+    let mut splash_active = false;
+    let mut splash_fade_start: Option<std::time::Instant> = Some(std::time::Instant::now());
     let splash_fade_duration = 1.0f32; // 渐出时长 1 秒
     let mut particle_capacity: u32 = num_particles; // 用户选择的粒子容量上限
 
@@ -1859,9 +2196,19 @@ async fn run() {
         while let Ok((particles, mats)) = logic_task_rx.recv() {
             let mut events = Vec::new();
             
+            let active_mat_ids: std::collections::HashSet<usize> = mats.iter().enumerate()
+                .filter(|(_, m)| m.logic_rules.iter().any(|r| r.is_active))
+                .map(|(idx, _)| idx)
+                .collect();
+            if active_mat_ids.is_empty() {
+                let _ = logic_result_tx.send(events);
+                continue;
+            }
+
             for (i, p) in particles.iter().enumerate() {
                 if (p.mat_type & 0x40000000) != 0 { continue; }
                 let mat_id = (p.mat_type & 0xFF) as usize;
+                if !active_mat_ids.contains(&mat_id) { continue; }
                 if let Some(m) = mats.get(mat_id) {
                     if m.logic_rules.is_empty() { continue; }
                     
@@ -2016,7 +2363,9 @@ async fn run() {
                         if new_size.width > 0 && new_size.height > 0 {
                             config.width = new_size.width;
                             config.height = new_size.height;
-                            surface.configure(&device, &config);
+                            if let Some(surf) = &surface_opt {
+        surf.configure(&device, &config);
+    }
                             msaa_view = create_msaa_tex(
                                 &device,
                                 config.format,
@@ -2501,7 +2850,8 @@ async fn run() {
                             for id in &full_output.textures_delta.free {
                                 egui_renderer.free_texture(id);
                             }
-                            let output = match surface.get_current_texture() {
+                            let surf = if let Some(s) = &surface_opt { s } else { return; };
+                            let output = match surf.get_current_texture() {
                                 Ok(t) => t,
                                 Err(_) => return,
                             };
@@ -4713,7 +5063,8 @@ async fn run() {
                             egui_renderer.free_texture(id);
                         }
 
-                        let output = match surface.get_current_texture() {
+                        let surf = if let Some(s) = &surface_opt { s } else { return; };
+                            let output = match surf.get_current_texture() {
                             Ok(t) => t,
                             Err(_) => return,
                         };
@@ -4760,7 +5111,7 @@ async fn run() {
                             enc.copy_buffer_to_buffer(&particle_buf, 0, &particle_staging_buf, 0, size);
                             queue.submit(Some(enc.finish()));
                             let (tx, rx) = std::sync::mpsc::channel();
-                            particle_staging_buf.slice(..size).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+                            particle_staging_buf.slice(..size).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
                             device.poll(wgpu::Maintain::Wait);
                             match rx.recv() {
                                 Ok(Ok(())) => {
@@ -4768,7 +5119,8 @@ async fn run() {
                                     let eps = bytemuck::cast_slice::<_, Particle>(&data).to_vec();
                                     let m_props = materials.get(current_material as usize).map_or(1.5, |m| m.conn_dist_mult);
                                     let dx = 0.0112 * m_props;
-                                    let grid = ParticleGrid::new(&eps, dx * 2.0);
+                                    let search_r = (grab_radius * 3.0).max(5.0);
+                                    let grid = ParticleGrid::new_around(&eps, dx * 2.0, cursor_world, search_r);
                                     existing_replace_state = Some((eps, grid));
                                     drop(data);
                                     particle_staging_buf.unmap();
@@ -5083,7 +5435,7 @@ async fn run() {
                                     queue.submit(Some(encoder.finish()));
                                     
                                     let (tx, rx) = std::sync::mpsc::channel();
-                                    particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+                                    particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
                                     device.poll(wgpu::Maintain::Wait);
                                     
                                     if rx.recv().unwrap().is_ok() {
@@ -5511,7 +5863,8 @@ async fn run() {
                             _pad_c: 0,
                             gravity_sources: gravity_sources_arr,
                             materials: {
-                                let mut arr = [MaterialPropsWGSL { base_color: [0.0; 4], color2: [0.0; 4], conn_dist: 0.0, len_break: 0.0, ang_break: 0.0, melt_temp: 0.0, boil_temp: 0.0, flags: 0, surface_tension: 0.0, light_transmission: 0.0, light_reflectivity: 0.0, refractive_index: 0.0, heat_conduction: 1.0, heat_capacity: 1.0, ref_spectra: [0.0; 8] }; 64];
+                                let empty_pc = PhaseColorWGSL { color: [0.0; 4], color2: [0.0; 4], min_temp: 0.0, max_temp: 0.0, flags: 0, _pad: 0.0 };
+                                let mut arr = [MaterialPropsWGSL { base_color: [0.0; 4], color2: [0.0; 4], conn_dist: 0.0, len_break: 0.0, ang_break: 0.0, melt_temp: 0.0, boil_temp: 0.0, flags: 0, surface_tension: 0.0, light_transmission: 0.0, light_reflectivity: 0.0, refractive_index: 0.0, heat_conduction: 1.0, heat_capacity: 1.0, ref_spectra: [0.0; 8], phase_colors: [empty_pc; 10], num_phase_colors: 0, _pad_phase1: 0, _pad_phase2: 0, _pad_phase3: 0 }; 64];
                                 for (i, m) in materials.iter().enumerate().take(64) {
                                     let is_noisy_legacy = i == 1 || i == 4 || i == 5 || i == 7;
                                     let is_soft_legacy = i == 3 || i == 7;
@@ -5586,6 +5939,11 @@ async fn run() {
                                             }
                                             s
                                         },
+                                        phase_colors: [empty_pc; 10],
+                                        num_phase_colors: 0,
+                                        _pad_phase1: 0,
+                                        _pad_phase2: 0,
+                                        _pad_phase3: 0,
                                     };
                                 }
                                 arr
@@ -5791,7 +6149,7 @@ async fn run() {
                     queue.submit(Some(encoder.finish()));
 
                     let (tx, rx) = std::sync::mpsc::channel();
-                    particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+                    particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
                     device.poll(wgpu::Maintain::Wait);
 
                     if matches!(rx.recv(), Ok(Ok(()))) {
@@ -5845,7 +6203,7 @@ async fn run() {
                             queue.submit(Some(encoder.finish()));
                             
                             let (tx, rx) = std::sync::mpsc::channel();
-                            particle_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+                            particle_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
                             
                             device.poll(wgpu::Maintain::Wait);
                             if rx.recv().unwrap().is_ok() {
@@ -5941,7 +6299,7 @@ async fn run() {
                             queue.submit(Some(encoder.finish()));
                             
                             let (tx, rx) = std::sync::mpsc::channel();
-                            particle_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+                            particle_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
                             
                             device.poll(wgpu::Maintain::Wait);
                             if rx.recv().unwrap().is_ok() {
@@ -6061,7 +6419,8 @@ async fn run() {
                         // ===== 逻辑引擎同步执行 =====
                         if !is_paused {
                             logic_tick_timer += dt;
-                            if logic_tick_timer >= 0.1 && !logic_mapping_active && active_particles > 0 {
+                            let has_active_logic_rules = materials.iter().any(|m| m.logic_rules.iter().any(|r| r.is_active));
+                            if logic_tick_timer >= 0.1 && !logic_mapping_active && active_particles > 0 && has_active_logic_rules {
                                 logic_tick_timer = 0.0;
                                 let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                                 let copy_size = active_particles as u64 * std::mem::size_of::<Particle>() as u64;
@@ -6201,6 +6560,34 @@ async fn run() {
                     }
                     _ => {}
                 }
+            }
+            Event::Resumed => {
+                if surface_opt.is_none() {
+                    if let Ok(surf) = _instance.create_surface(window.clone()) {
+                        let sz = window.inner_size();
+                        if sz.width > 0 && sz.height > 0 {
+                            config.width = sz.width;
+                            config.height = sz.height;
+                        } else {
+                            config.width = 1;
+                            config.height = 1;
+                        }
+                        surf.configure(&device, &config);
+                        surface_opt = Some(surf);
+                        
+                        msaa_view = create_msaa_tex(
+                            &device,
+                            config.format,
+                            config.width,
+                            config.height,
+                        );
+                        
+                        window.request_redraw();
+                    }
+                }
+            }
+            Event::Suspended => {
+                surface_opt = None;
             }
             _ => {}
         })

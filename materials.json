@@ -1,300 +1,2582 @@
 [
-    {
-        "name": "标准流体",
-        "color": [
-            100,
-            150,
-            255,
-            255
+  {
+    "name": "标准软体",
+    "group": "基础材料",
+    "color": [
+      100,
+      150,
+      255,
+      255
+    ],
+    "color2": [
+      100,
+      150,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.4,
+    "link_angle_strength": 5.0,
+    "melt_temp": 600.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.02,
+    "light_transmission": 0.99,
+    "light_reflectivity": 0.03,
+    "refractive_index": 1.4,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        470.0,
+        490.0
+      ],
+      [
+        450.0,
+        451.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "层岩",
+    "group": "基础材料",
+    "color": [
+      150,
+      150,
+      150,
+      255
+    ],
+    "color2": [
+      150,
+      150,
+      150,
+      255
+    ],
+    "mass": 1.5,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.6,
+    "link_angle_strength": 8.0,
+    "melt_temp": 1200.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.2,
+    "light_reflectivity": 0.05,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        400.0,
+        404.0
+      ],
+      [
+        550.0,
+        560.0
+      ],
+      [
+        700.0,
+        712.0
+      ],
+      [
+        430.0,
+        450.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "铁金属",
+    "group": "基础材料",
+    "color": [
+      200,
+      200,
+      200,
+      255
+    ],
+    "color2": [
+      200,
+      200,
+      200,
+      255
+    ],
+    "mass": 3.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 1.2,
+    "link_angle_strength": 20.0,
+    "melt_temp": 1800.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.99,
+    "refractive_index": 1.0,
+    "heat_conduction": 13.0,
+    "specific_heat_capacity": 0.8,
+    "reflectance_spectrum": [
+      [
+        400.0,
+        500.0
+      ],
+      [
+        600.0,
+        750.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "弹性橡胶",
+    "group": "基础材料",
+    "color": [
+      80,
+      80,
+      80,
+      255
+    ],
+    "color2": [
+      80,
+      80,
+      80,
+      255
+    ],
+    "mass": 0.8,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 2.0,
+    "link_angle_strength": 50.0,
+    "melt_temp": 200.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.01,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        380.0,
+        600.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "叶岩",
+    "group": "扩展材料",
+    "color": [
+      100,
+      100,
+      105,
+      255
+    ],
+    "color2": [
+      100,
+      100,
+      105,
+      255
+    ],
+    "mass": 2.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.3,
+    "link_angle_strength": 4.0,
+    "melt_temp": 1400.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.05,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        430.0,
+        434.0
+      ],
+      [
+        562.0,
+        568.0
+      ],
+      [
+        621.0,
+        634.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "钴玻璃",
+    "group": "基础材料",
+    "color": [
+      200,
+      220,
+      255,
+      255
+    ],
+    "color2": [
+      200,
+      220,
+      255,
+      255
+    ],
+    "mass": 0.8,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.1,
+    "link_angle_strength": 2.0,
+    "melt_temp": 700.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.99,
+    "light_reflectivity": 0.2,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        480.0,
+        484.0
+      ],
+      [
+        490.0,
+        492.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "钨金属",
+    "group": "扩展材料",
+    "color": [
+      22,
+      22,
+      22,
+      255
+    ],
+    "color2": [
+      22,
+      22,
+      22,
+      255
+    ],
+    "mass": 10.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.3,
+    "link_angle_strength": 10.0,
+    "melt_temp": 3400.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.8,
+    "light_reflectivity": 0.995,
+    "refractive_index": 2.0,
+    "heat_conduction": 1.2,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        100.0,
+        101.0
+      ],
+      [
+        441.0,
+        442.0
+      ],
+      [
+        656.0,
+        657.0
+      ],
+      [
+        356.0,
+        359.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "硅胶",
+    "group": "扩展材料",
+    "color": [
+      180,
+      204,
+      167,
+      255
+    ],
+    "color2": [
+      180,
+      204,
+      167,
+      255
+    ],
+    "mass": 0.4,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.8,
+    "link_angle_strength": 90.0,
+    "melt_temp": 200.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.93,
+    "light_reflectivity": 0.05,
+    "refractive_index": 1.01,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        500.0,
+        550.0
+      ],
+      [
+        565.0,
+        570.0
+      ],
+      [
+        580.0,
+        582.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "Q1",
+    "group": "测试材料",
+    "color": [
+      0,
+      0,
+      0,
+      255
+    ],
+    "color2": [
+      52,
+      0,
+      0,
+      255
+    ],
+    "mass": 180.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 80.0,
+    "link_angle_strength": 30.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.2,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        660.0,
+        680.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "Q2",
+    "group": "测试材料",
+    "color": [
+      93,
+      0,
+      0,
+      255
+    ],
+    "color2": [
+      186,
+      0,
+      0,
+      255
+    ],
+    "mass": 10000.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 2.0,
+    "link_angle_strength": 1.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.22,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        670.0,
+        690.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "Q4",
+    "group": "测试材料",
+    "color": [
+      186,
+      79,
+      0,
+      255
+    ],
+    "color2": [
+      118,
+      0,
+      0,
+      255
+    ],
+    "mass": 40.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.0,
+    "link_dist_strength": 80.0,
+    "link_angle_strength": 1.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.16,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        660.0,
+        690.0
+      ],
+      [
+        620.0,
+        630.0
+      ],
+      [
+        600.0,
+        603.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "水",
+    "group": "基础材料",
+    "color": [
+      0,
+      76,
+      255,
+      255
+    ],
+    "color2": [
+      0,
+      140,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.0,
+    "link_dist_strength": 0.2,
+    "link_angle_strength": 3.0,
+    "melt_temp": 10.0,
+    "boil_temp": 100.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.02,
+    "light_transmission": 0.98,
+    "light_reflectivity": 0.1,
+    "refractive_index": 1.38,
+    "heat_conduction": 10.0,
+    "specific_heat_capacity": 6.0,
+    "reflectance_spectrum": [
+      [
+        440.0,
+        450.0
+      ],
+      [
+        480.0,
+        481.0
+      ],
+      [
+        486.0,
+        490.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "玫瑰盐沙子",
+    "group": "基础材料",
+    "color": [
+      218,
+      141,
+      255,
+      255
+    ],
+    "color2": [
+      229,
+      191,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.0,
+    "link_dist_strength": 0.02,
+    "link_angle_strength": 0.2,
+    "melt_temp": 300.0,
+    "boil_temp": 800.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.99,
+    "light_reflectivity": 0.1,
+    "refractive_index": 2.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        380.0,
+        400.0
+      ],
+      [
+        450.0,
+        452.0
+      ],
+      [
+        670.0,
+        677.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "Q3",
+    "group": "测试材料",
+    "color": [
+      55,
+      0,
+      0,
+      255
+    ],
+    "color2": [
+      21,
+      0,
+      0,
+      255
+    ],
+    "mass": 14000.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 0.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 2000.0,
+    "boil_temp": 3000.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.3,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        660.0,
+        685.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "燃油",
+    "group": "特殊材料",
+    "color": [
+      62,
+      58,
+      57,
+      255
+    ],
+    "color2": [
+      78,
+      97,
+      90,
+      255
+    ],
+    "mass": 0.6,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 5.0,
+    "boil_temp": 100.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.01,
+    "light_transmission": 0.96,
+    "light_reflectivity": 0.3,
+    "refractive_index": 1.46,
+    "heat_conduction": 2.0,
+    "specific_heat_capacity": 1.3,
+    "reflectance_spectrum": [
+      [
+        620.0,
+        630.0
+      ]
+    ],
+    "logic_rules": [
+      {
+        "name": "ruanshao",
+        "is_active": true,
+        "trigger_temp": [
+          120.0,
+          1000.0
         ],
-        "color2": null,
-        "mass": 1.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 0.4,
-        "link_angle_strength": 5.0,
-        "melt_temp": 600.0,
-        "boil_temp": null,
-        "is_soft": null,
-        "is_noisy": null
-    },
-    {
-        "name": "凝固岩石",
-        "color": [
-            150,
-            150,
-            150,
-            255
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 60.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": true,
+        "effect_mutate": null,
+        "effect_spawn": [
+          15,
+          3
         ],
-        "color2": null,
-        "mass": 1.5,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 0.6,
-        "link_angle_strength": 8.0,
-        "melt_temp": 1200.0,
-        "boil_temp": null,
-        "is_soft": null,
-        "is_noisy": null
-    },
-    {
-        "name": "结构刚体",
-        "color": [
-            200,
-            200,
-            200,
-            255
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "火",
+    "group": "特殊材料",
+    "color": [
+      255,
+      211,
+      0,
+      255
+    ],
+    "color2": [
+      255,
+      211,
+      0,
+      255
+    ],
+    "mass": 0.6,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 0.0,
+    "boil_temp": 0.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.998,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        580.0,
+        590.0
+      ]
+    ],
+    "logic_rules": [
+      {
+        "name": "xiaoshi",
+        "is_active": true,
+        "trigger_temp": [
+          -20.0,
+          200.0
         ],
-        "color2": null,
-        "mass": 3.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 1.2,
-        "link_angle_strength": 20.0,
-        "melt_temp": 1800.0,
-        "boil_temp": null,
-        "is_soft": null,
-        "is_noisy": null,
-        "light_reflectivity": 0.99,
-        "reflectance_spectrum": [[440.0, 490.0]]
-    },
-    {
-        "name": "弹性橡胶",
-        "color": [
-            80,
-            80,
-            80,
-            255
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 600.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 17,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "xiaos",
+        "is_active": true,
+        "trigger_temp": [
+          4000.0,
+          1000000.0
         ],
-        "color2": null,
-        "mass": 0.8,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 2.0,
-        "link_angle_strength": 50.0,
-        "melt_temp": 200.0,
-        "boil_temp": null,
-        "is_soft": null,
-        "is_noisy": null
-    },
-    {
-        "name": "叶岩",
-        "color": [
-            100,
-            100,
-            105,
-            255
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": -3000.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 17,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "TNT",
+    "group": "特殊材料",
+    "color": [
+      255,
+      184,
+      184,
+      255
+    ],
+    "color2": [
+      255,
+      184,
+      184,
+      255
+    ],
+    "mass": 0.3,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 3.0,
+    "link_angle_strength": 0.08,
+    "melt_temp": 1900.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.3,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 0.5,
+    "reflectance_spectrum": [
+      [
+        390.0,
+        394.0
+      ],
+      [
+        700.0,
+        740.0
+      ],
+      [
+        600.0,
+        620.0
+      ],
+      [
+        560.0,
+        563.0
+      ]
+    ],
+    "logic_rules": [
+      {
+        "name": "baozhai",
+        "is_active": true,
+        "trigger_temp": [
+          300.0,
+          10000.0
         ],
-        "color2": null,
-        "mass": 2.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 0.3,
-        "link_angle_strength": 4.0,
-        "melt_temp": 1400.0,
-        "boil_temp": null,
-        "is_soft": null,
-        "is_noisy": null
-    },
-    {
-        "name": "钴玻璃",
-        "color": [
-            200,
-            220,
-            255,
-            128
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 2000.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 15,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "baozhai2",
+        "is_active": true,
+        "trigger_temp": [
+          600.0,
+          100000.0
         ],
-        "color2": null,
-        "mass": 0.8,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 0.1,
-        "link_angle_strength": 2.0,
-        "melt_temp": 700.0,
-        "boil_temp": null,
-        "is_soft": null,
-        "is_noisy": null
-    },
-    {
-        "name": "钨金属",
-        "color": [
-            12,
-            12,
-            12,
-            255
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 1000.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 17,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "烟",
+    "group": "特殊材料",
+    "color": [
+      29,
+      29,
+      29,
+      255
+    ],
+    "color2": [
+      63,
+      63,
+      63,
+      255
+    ],
+    "mass": 0.2,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 20.0,
+    "boil_temp": 30.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.02,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        100.0,
+        180.0
+      ]
+    ],
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          0.0,
+          30.0
         ],
-        "color2": null,
-        "mass": 10.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 0.3,
-        "link_angle_strength": 10.0,
-        "melt_temp": 3400.0,
-        "boil_temp": null,
-        "is_soft": null,
-        "is_noisy": null
-    },
-    {
-        "name": "硅胶",
-        "color": [
-            180,
-            204,
-            167,
-            255
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": true,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": [
+          1030.0,
+          10000.0
         ],
-        "color2": null,
-        "mass": 0.4,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 0.8,
-        "link_angle_strength": 90.0,
-        "melt_temp": 200.0,
-        "boil_temp": null,
-        "is_soft": null,
-        "is_noisy": null
-    },
-    {
-        "name": "QWW",
-        "color": [
-            0,
-            0,
-            0,
-            255
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": -1000.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "蓝光反射靶",
+    "group": "光学材料",
+    "color": [
+      255,
+      201,
+      116,
+      255
+    ],
+    "color2": [
+      255,
+      201,
+      116,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.2,
+    "link_angle_strength": 0.1,
+    "melt_temp": 800.0,
+    "boil_temp": 1400.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.999,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.6,
+    "specific_heat_capacity": 0.8,
+    "reflectance_spectrum": [
+      [
+        450.0,
+        465.0
+      ],
+      [
+        470.0,
+        475.0
+      ],
+      [
+        425.0,
+        440.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "D1",
+    "group": "特殊材料",
+    "color": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "color2": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.01,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": [
+          5,
+          6
         ],
-        "color2": [
-            52,
-            0,
-            0,
-            255
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": [
+          19,
+          1,
+          6,
+          1.0
         ],
-        "mass": 180.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 80.0,
-        "link_angle_strength": 30.0,
-        "melt_temp": 1000.0,
-        "boil_temp": 2000.0,
-        "is_soft": false,
-        "is_noisy": true
-    },
-    {
-        "name": "QWW1244",
-        "color": [
-            93,
-            0,
-            0,
-            255
+        "effect_temp_add": 10.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 20,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "D2",
+    "group": "藏",
+    "color": [
+      151,
+      151,
+      151,
+      255
+    ],
+    "color2": [
+      151,
+      151,
+      151,
+      255
+    ],
+    "mass": 0.3,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.1,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": [
+          20,
+          3,
+          6,
+          1.0
         ],
-        "color2": [
-            186,
-            0,
-            0,
-            255
+        "effect_temp_add": 10.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 21,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 2",
+        "is_active": false,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": [
+          1,
+          4
         ],
-        "mass": 10000.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.5,
-        "link_dist_strength": 2.0,
-        "link_angle_strength": 1.0,
-        "melt_temp": 1000.0,
-        "boil_temp": 2000.0,
-        "is_soft": false,
-        "is_noisy": true
-    },
-    {
-        "name": "QWW1240000",
-        "color": [
-            186,
-            79,
-            0,
-            255
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": [
+          20,
+          1,
+          4,
+          0.05
         ],
-        "color2": [
-            118,
-            0,
-            0,
-            255
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 19,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "D3",
+    "group": "藏",
+    "color": [
+      60,
+      60,
+      60,
+      255
+    ],
+    "color2": [
+      60,
+      60,
+      60,
+      255
+    ],
+    "mass": 0.35,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.98,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": [
+          21,
+          1,
+          4,
+          0.05
         ],
-        "mass": 40.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.0,
-        "link_dist_strength": 80.0,
-        "link_angle_strength": 1.0,
-        "melt_temp": 1000.0,
-        "boil_temp": 2000.0,
-        "is_soft": false,
-        "is_noisy": true
-    },
-    {
-        "name": "水",
-        "color": [
-            0,
-            76,
-            255,
-            255
+        "effect_temp_add": 100.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 20,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": [
+          0.01,
+          10.0
         ],
-        "color2": [
-            0,
-            140,
-            255,
-            255
+        "trigger_mat_links": null,
+        "effect_temp_add": 10.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "热光胶体",
+    "group": "光学材料",
+    "color": [
+      125,
+      186,
+      89,
+      255
+    ],
+    "color2": [
+      125,
+      186,
+      89,
+      255
+    ],
+    "mass": 0.5,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.3,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        510.0,
+        520.0
+      ],
+      [
+        525.0,
+        528.0
+      ]
+    ],
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          400.0,
+          1000.0
         ],
-        "mass": 1.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.0,
-        "link_dist_strength": 10.0,
-        "link_angle_strength": 80.0,
-        "melt_temp": 10.0,
-        "boil_temp": 100.0,
-        "is_soft": false,
-        "is_noisy": true
-    },
-    {
-        "name": "OOPP",
-        "color": [
-            218,
-            141,
-            255,
-            255
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": -100.0,
+        "effect_charge_add": 1000.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": {
+          "energy": 1.0,
+          "count": 3,
+          "lifetime": 10.0,
+          "speed": 1.0,
+          "wavelength_ranges": [
+            [
+              600.0,
+              700.0
+            ]
+          ],
+          "force_spawn": true
+        }
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": [
+          1000.0,
+          20000.0
         ],
-        "color2": [
-            229,
-            191,
-            255,
-            255
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": -1000.0,
+        "effect_charge_add": 10000.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": {
+          "energy": 10.0,
+          "count": 3,
+          "lifetime": 10.0,
+          "speed": 1.0,
+          "wavelength_ranges": [
+            [
+              560.0,
+              700.0
+            ]
+          ],
+          "force_spawn": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "压光陶瓷",
+    "group": "光学材料",
+    "color": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "color2": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "mass": 0.2,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.2,
+    "link_angle_strength": 0.3,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        430.0,
+        440.0
+      ],
+      [
+        560.0,
+        565.0
+      ],
+      [
+        670.0,
+        680.0
+      ]
+    ],
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": [
+          0.01,
+          0.1
         ],
-        "mass": 1.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 1.0,
-        "link_dist_strength": 0.02,
-        "link_angle_strength": 0.2,
-        "melt_temp": 300.0,
-        "boil_temp": 800.0,
-        "is_soft": false,
-        "is_noisy": true
-    },
-    {
-        "name": "QWW4244",
-        "color": [
-            55,
-            0,
-            0,
-            255
+        "trigger_mat_links": null,
+        "effect_temp_add": 100.0,
+        "effect_charge_add": 1000.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": {
+          "energy": 10.0,
+          "count": 3,
+          "lifetime": 10.0,
+          "speed": 5.0,
+          "wavelength_ranges": [
+            [
+              500.0,
+              500.0
+            ]
+          ],
+          "force_spawn": true
+        }
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": [
+          0.1,
+          1.0
         ],
-        "color2": [
-            21,
-            0,
-            0,
-            255
+        "trigger_mat_links": null,
+        "effect_temp_add": 1000.0,
+        "effect_charge_add": 100000.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": {
+          "energy": 10.0,
+          "count": 10,
+          "lifetime": 10.0,
+          "speed": 5.0,
+          "wavelength_ranges": [
+            [
+              450.0,
+              450.0
+            ]
+          ],
+          "force_spawn": true
+        }
+      },
+      {
+        "name": "新规则 3",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": [
+          1000.0,
+          1000000.0
         ],
-        "mass": 14000.0,
-        "diameter": 1.0,
-        "conn_dist_mult": 0.5,
-        "link_dist_strength": 0.5,
-        "link_angle_strength": 5.0,
-        "melt_temp": 2000.0,
-        "boil_temp": 3000.0,
-        "is_soft": false,
-        "is_noisy": true
-    }
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 30.0,
+        "effect_charge_add": -1000.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": {
+          "energy": 10.0,
+          "count": 10,
+          "lifetime": 10.0,
+          "speed": 5.0,
+          "wavelength_ranges": [
+            [
+              430.0,
+              450.0
+            ]
+          ],
+          "force_spawn": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "电池",
+    "group": "电学材料",
+    "color": [
+      108,
+      143,
+      177,
+      255
+    ],
+    "color2": [
+      108,
+      143,
+      177,
+      255
+    ],
+    "mass": 0.3,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.1,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": [
+      [
+        470.0,
+        475.0
+      ],
+      [
+        480.0,
+        482.0
+      ]
+    ],
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          0.0,
+          800.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 100.0,
+        "effect_charge_add": 1000.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "硅",
+    "group": "光学材料",
+    "color": [
+      114,
+      123,
+      156,
+      255
+    ],
+    "color2": [
+      185,
+      186,
+      206,
+      255
+    ],
+    "mass": 0.2,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 0.8,
+    "melt_temp": 900.0,
+    "boil_temp": 1800.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.999,
+    "light_reflectivity": 0.2,
+    "refractive_index": 1.8,
+    "heat_conduction": 1.7,
+    "specific_heat_capacity": 0.7,
+    "reflectance_spectrum": [
+      [
+        440.0,
+        441.0
+      ],
+      [
+        460.0,
+        466.0
+      ]
+    ],
+    "logic_rules": []
+  },
+  {
+    "name": "测试",
+    "group": "测试",
+    "color": [
+      255,
+      0,
+      0,
+      255
+    ],
+    "color2": [
+      0,
+      0,
+      0,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": []
+  },
+  {
+    "name": "新材质",
+    "group": "默认",
+    "color": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "color2": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          10.0,
+          100.0
+        ],
+        "trigger_charge": [
+          0.0,
+          10000.0
+        ],
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": [
+          11,
+          1,
+          6,
+          1.0
+        ],
+        "effect_temp_add": 100.0,
+        "effect_charge_add": 20000.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 15,
+        "effect_spawn": [
+          27,
+          2
+        ],
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": [
+          100.0,
+          1000000.0
+        ],
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": [
+          0.001,
+          10.0
+        ],
+        "trigger_mat_links": null,
+        "effect_temp_add": 1000.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": true,
+        "effect_delete_self": true,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "新材质",
+    "group": "默认",
+    "color": [
+      206,
+      255,
+      186,
+      255
+    ],
+    "color2": [
+      206,
+      255,
+      186,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": [
+          100.0,
+          10000000.0
+        ],
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "新材质",
+    "group": "默认",
+    "color": [
+      0,
+      245,
+      255,
+      255
+    ],
+    "color2": [
+      0,
+      245,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": [
+          1,
+          2
+        ],
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 0,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": [
+          0,
+          0
+        ],
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": 10.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 3",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": [
+          4,
+          6
+        ],
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": true,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "神秘泡沫",
+    "group": "默认",
+    "color": [
+      255,
+      247,
+      0,
+      255
+    ],
+    "color2": [
+      255,
+      247,
+      0,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          0.0,
+          200.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": [
+          1,
+          4
+        ],
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": [
+          0,
+          1
+        ],
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": [
+          0,
+          0
+        ],
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": true,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "制冷",
+    "group": "默认",
+    "color": [
+      0,
+      18,
+      125,
+      255
+    ],
+    "color2": [
+      0,
+      18,
+      125,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 20.0,
+    "specific_heat_capacity": 3.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          -40.0,
+          10000.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": -100.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "新材质",
+    "group": "默认",
+    "color": [
+      191,
+      80,
+      212,
+      255
+    ],
+    "color2": [
+      191,
+      80,
+      212,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "U新材质",
+    "group": "默认",
+    "color": [
+      133,
+      104,
+      206,
+      255
+    ],
+    "color2": [
+      133,
+      104,
+      206,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.1,
+    "link_angle_strength": 0.2,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": [
+          11,
+          1,
+          6,
+          0.1
+        ],
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": [
+          33,
+          4,
+          6,
+          1.0
+        ],
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": true,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 3",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": [
+          11,
+          3,
+          6,
+          1.0
+        ],
+        "effect_temp_add": 40.0,
+        "effect_charge_add": 100.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 4",
+        "is_active": true,
+        "trigger_temp": [
+          40.0,
+          10000.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 200.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 17,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "绝缘胶体",
+    "group": "电学材料",
+    "color": [
+      255,
+      200,
+      149,
+      255
+    ],
+    "color2": [
+      255,
+      200,
+      149,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 1.0,
+    "link_angle_strength": 9.0,
+    "melt_temp": 400.0,
+    "boil_temp": 600.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.001,
+    "light_transmission": 0.3,
+    "light_reflectivity": 0.8,
+    "refractive_index": 1.2,
+    "heat_conduction": 3.0,
+    "specific_heat_capacity": 0.6,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": null,
+        "trigger_charge": [
+          0.0,
+          1000000.0
+        ],
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": -1000.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "木质部",
+    "group": "默认",
+    "color": [
+      131,
+      87,
+      0,
+      255
+    ],
+    "color2": [
+      84,
+      54,
+      0,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.2,
+    "link_angle_strength": 1.0,
+    "melt_temp": 10000.0,
+    "boil_temp": 600.0,
+    "is_soft": false,
+    "is_noisy": true,
+    "surface_tension": 0.0,
+    "light_transmission": 0.02,
+    "light_reflectivity": 0.7,
+    "refractive_index": 3.0,
+    "heat_conduction": 1.8,
+    "specific_heat_capacity": 1.65,
+    "reflectance_spectrum": [
+      [
+        600.0,
+        620.0
+      ],
+      [
+        670.0,
+        750.0
+      ]
+    ],
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          600.0,
+          100000.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 2000.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 17,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "K新",
+    "group": "默认",
+    "color": [
+      255,
+      221,
+      199,
+      255
+    ],
+    "color2": [
+      255,
+      221,
+      199,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.1,
+    "link_angle_strength": 0.2,
+    "melt_temp": 10000.0,
+    "boil_temp": 400.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          0.0,
+          40.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 300.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 35,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      },
+      {
+        "name": "新规则 2",
+        "is_active": true,
+        "trigger_temp": [
+          400.0,
+          10000.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 15,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "NIL",
+    "group": "默认",
+    "color": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "color2": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 4.0,
+    "link_angle_strength": 30.0,
+    "melt_temp": 170.0,
+    "boil_temp": 200.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          200.0,
+          10000.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 300.0,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": 17,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "热质体",
+    "group": "默认",
+    "color": [
+      85,
+      223,
+      0,
+      255
+    ],
+    "color2": [
+      85,
+      223,
+      0,
+      255
+    ],
+    "mass": 8.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 0.4,
+    "melt_temp": 6000.0,
+    "boil_temp": 10000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 20.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          0.0,
+          19000000.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": 100.0,
+        "effect_charge_add": 10.0,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  },
+  {
+    "name": "新材质",
+    "group": "默认",
+    "color": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "color2": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "mass": 1.0,
+    "diameter": 1.0,
+    "conn_dist_mult": 1.5,
+    "link_dist_strength": 0.5,
+    "link_angle_strength": 5.0,
+    "melt_temp": 1000.0,
+    "boil_temp": 2000.0,
+    "is_soft": false,
+    "is_noisy": false,
+    "surface_tension": 0.0,
+    "light_transmission": 0.0,
+    "light_reflectivity": 0.0,
+    "refractive_index": 1.0,
+    "heat_conduction": 1.0,
+    "specific_heat_capacity": 1.0,
+    "reflectance_spectrum": null,
+    "logic_rules": [
+      {
+        "name": "新规则 1",
+        "is_active": true,
+        "trigger_temp": [
+          0.0,
+          10000.0
+        ],
+        "trigger_charge": null,
+        "trigger_light": null,
+        "trigger_links": null,
+        "trigger_pull": null,
+        "trigger_push": null,
+        "trigger_mat_links": null,
+        "effect_temp_add": null,
+        "effect_charge_add": null,
+        "effect_light_add": null,
+        "effect_break_links": false,
+        "effect_delete_self": false,
+        "effect_mutate": null,
+        "effect_spawn": null,
+        "effect_consume_spawn": null,
+        "effect_emit_photon": null
+      }
+    ]
+  }
 ]
