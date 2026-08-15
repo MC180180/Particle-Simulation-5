@@ -1,170 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
-
-#[cfg(target_os = "windows")]
-mod win7_shim {
-    use super::*;
-    static INIT: AtomicBool = AtomicBool::new(false);
-    static FUNC_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
-
-    #[allow(non_snake_case)]
-    pub unsafe extern "system" fn win7_GetSystemTimePreciseAsFileTime(lp_system_time_as_file_time: *mut std::ffi::c_void) {
-        if !INIT.load(Ordering::Relaxed) {
-            let h_kernel32 = windows_sys::Win32::System::LibraryLoader::GetModuleHandleA(b"kernel32.dll\0".as_ptr());
-            if h_kernel32 != 0 {
-                let proc_ptr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_kernel32, b"GetSystemTimePreciseAsFileTime\0".as_ptr());
-                if let Some(proc_fn) = proc_ptr {
-                    FUNC_PTR.store(proc_fn as *mut std::ffi::c_void, Ordering::Relaxed);
-                }
-            }
-            INIT.store(true, Ordering::Relaxed);
-        }
-        
-        let ptr = FUNC_PTR.load(Ordering::Relaxed);
-        if !ptr.is_null() {
-            let real_fn: unsafe extern "system" fn(*mut std::ffi::c_void) = std::mem::transmute(ptr);
-            real_fn(lp_system_time_as_file_time);
-        } else {
-            windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(
-                lp_system_time_as_file_time as *mut _
-            );
-        }
-    }
-
-    static WAIT_INIT: AtomicBool = AtomicBool::new(false);
-    static WAIT_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
-    static WAKE_SINGLE_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
-    static WAKE_ALL_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
-
-    fn init_synch_ptrs() {
-        if !WAIT_INIT.load(Ordering::Relaxed) {
-            unsafe {
-                let h_synch = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"api-ms-win-core-synch-l1-2-0.dll\0".as_ptr());
-                if h_synch != 0 {
-                    if let Some(p) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_synch, b"WaitOnAddress\0".as_ptr()) {
-                        WAIT_PTR.store(p as *mut std::ffi::c_void, Ordering::Relaxed);
-                    }
-                    if let Some(p) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_synch, b"WakeByAddressSingle\0".as_ptr()) {
-                        WAKE_SINGLE_PTR.store(p as *mut std::ffi::c_void, Ordering::Relaxed);
-                    }
-                    if let Some(p) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_synch, b"WakeByAddressAll\0".as_ptr()) {
-                        WAKE_ALL_PTR.store(p as *mut std::ffi::c_void, Ordering::Relaxed);
-                    }
-                }
-            }
-            WAIT_INIT.store(true, Ordering::Relaxed);
-        }
-    }
-
-    #[allow(non_snake_case)]
-    pub unsafe extern "system" fn win7_WaitOnAddress(
-        address: *const std::ffi::c_void,
-        compare_address: *const std::ffi::c_void,
-        address_size: usize,
-        dw_milliseconds: u32,
-    ) -> i32 {
-        init_synch_ptrs();
-        let ptr = WAIT_PTR.load(Ordering::Relaxed);
-        if !ptr.is_null() {
-            let real_fn: unsafe extern "system" fn(*const std::ffi::c_void, *const std::ffi::c_void, usize, u32) -> i32 = std::mem::transmute(ptr);
-            real_fn(address, compare_address, address_size, dw_milliseconds)
-        } else {
-            let match_val = match address_size {
-                1 => *(address as *const u8) == *(compare_address as *const u8),
-                2 => *(address as *const u16) == *(compare_address as *const u16),
-                4 => *(address as *const u32) == *(compare_address as *const u32),
-                8 => *(address as *const u64) == *(compare_address as *const u64),
-                _ => false,
-            };
-            if match_val {
-                std::thread::sleep(std::time::Duration::from_millis(if dw_milliseconds == 0 { 0 } else { 1 }));
-            }
-            1
-        }
-    }
-
-    #[allow(non_snake_case)]
-    pub unsafe extern "system" fn win7_WakeByAddressSingle(address: *const std::ffi::c_void) {
-        init_synch_ptrs();
-        let ptr = WAKE_SINGLE_PTR.load(Ordering::Relaxed);
-        if !ptr.is_null() {
-            let real_fn: unsafe extern "system" fn(*const std::ffi::c_void) = std::mem::transmute(ptr);
-            real_fn(address);
-        }
-    }
-
-    #[allow(non_snake_case)]
-    pub unsafe extern "system" fn win7_WakeByAddressAll(address: *const std::ffi::c_void) {
-        init_synch_ptrs();
-        let ptr = WAKE_ALL_PTR.load(Ordering::Relaxed);
-        if !ptr.is_null() {
-            let real_fn: unsafe extern "system" fn(*const std::ffi::c_void) = std::mem::transmute(ptr);
-            real_fn(address);
-        }
-    }
-
-    static PRNG_INIT: AtomicBool = AtomicBool::new(false);
-    static PRNG_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
-
-    #[allow(non_snake_case)]
-    pub unsafe extern "system" fn win7_ProcessPrng(pb_buffer: *mut u8, cb_buffer: usize) -> i32 {
-        if !PRNG_INIT.load(Ordering::Relaxed) {
-            let h_bcrypt_prim = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"bcryptprimitives.dll\0".as_ptr());
-            if h_bcrypt_prim != 0 {
-                if let Some(p) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_bcrypt_prim, b"ProcessPrng\0".as_ptr()) {
-                    PRNG_PTR.store(p as *mut std::ffi::c_void, Ordering::Relaxed);
-                }
-            }
-            PRNG_INIT.store(true, Ordering::Relaxed);
-        }
-
-        let ptr = PRNG_PTR.load(Ordering::Relaxed);
-        if !ptr.is_null() {
-            let real_fn: unsafe extern "system" fn(*mut u8, usize) -> i32 = std::mem::transmute(ptr);
-            real_fn(pb_buffer, cb_buffer)
-        } else {
-            // Windows 7 Fallback using BCryptGenRandom from bcrypt.dll
-            type BCryptGenRandomFn = unsafe extern "system" fn(*mut std::ffi::c_void, *mut u8, u32, u32) -> i32;
-            let h_bcrypt = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"bcrypt.dll\0".as_ptr());
-            if h_bcrypt != 0 {
-                if let Some(proc_fn) = windows_sys::Win32::System::LibraryLoader::GetProcAddress(h_bcrypt, b"BCryptGenRandom\0".as_ptr()) {
-                    let bcrypt_fn: BCryptGenRandomFn = std::mem::transmute(proc_fn);
-                    // BCRYPT_USE_SYSTEM_PREFERRED_RNG = 0x00000002
-                    let status = bcrypt_fn(std::ptr::null_mut(), pb_buffer, cb_buffer as u32, 0x00000002);
-                    if status == 0 {
-                        return 1;
-                    }
-                }
-            }
-            0
-        }
-    }
-
-}
-
-#[cfg(target_os = "windows")]
-#[no_mangle]
-pub static mut __imp_GetSystemTimePreciseAsFileTime: unsafe extern "system" fn(*mut std::ffi::c_void) = win7_shim::win7_GetSystemTimePreciseAsFileTime;
-
-#[cfg(target_os = "windows")]
-#[no_mangle]
-pub static mut __imp_WaitOnAddress: unsafe extern "system" fn(*const std::ffi::c_void, *const std::ffi::c_void, usize, u32) -> i32 = win7_shim::win7_WaitOnAddress;
-
-#[cfg(target_os = "windows")]
-#[no_mangle]
-pub static mut __imp_WakeByAddressSingle: unsafe extern "system" fn(*const std::ffi::c_void) = win7_shim::win7_WakeByAddressSingle;
-
-#[cfg(target_os = "windows")]
-#[no_mangle]
-pub static mut __imp_WakeByAddressAll: unsafe extern "system" fn(*const std::ffi::c_void) = win7_shim::win7_WakeByAddressAll;
-
-#[cfg(target_os = "windows")]
-#[no_mangle]
-pub static mut __imp_ProcessPrng: unsafe extern "system" fn(*mut u8, usize) -> i32 = win7_shim::win7_ProcessPrng;
-
-
 use bytemuck::{Pod, Zeroable};
 use egui::Context;
 use egui_wgpu::Renderer;
@@ -223,21 +58,6 @@ struct ParticleGrid {
     grid: std::collections::HashMap<(i32, i32), Vec<usize>>,
 }
 impl ParticleGrid {
-    fn new_around(particles: &[Particle], cell_size: f32, center: [f32; 2], radius: f32) -> Self {
-        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
-        let min_x = center[0] - radius;
-        let max_x = center[0] + radius;
-        let min_y = center[1] - radius;
-        let max_y = center[1] + radius;
-        for (i, p) in particles.iter().enumerate() {
-            if p.pos[0] >= min_x && p.pos[0] <= max_x && p.pos[1] >= min_y && p.pos[1] <= max_y {
-                let cx = (p.pos[0] / cell_size).floor() as i32;
-                let cy = (p.pos[1] / cell_size).floor() as i32;
-                grid.entry((cx, cy)).or_default().push(i);
-            }
-        }
-        Self { cell_size, grid }
-    }
     fn new(particles: &[Particle], cell_size: f32) -> Self {
         let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
         for (i, p) in particles.iter().enumerate() {
@@ -279,6 +99,7 @@ pub enum LogicEvent {
     ChangeCharge { id: u32, new_charge: f32 },
     Delete { id: u32 },
     EmitPhoton { pos: [f32; 2], angle: f32, params: PhotonEmitParams },
+    SpawnSlot { mat_type: u32, pos: [f32; 2], parent_id: u32, slot_idx: u8, connected: bool },
 }
 
 #[derive(PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -350,7 +171,7 @@ fn wl_to_color(wl: f32) -> egui::Color32 {
 
 fn draw_spectrum_bar(ui: &mut egui::Ui, ranges: Option<&Vec<(f32, f32)>>) {
     let height = 12.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(145.0), height), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(145.0), height), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let mut mesh = egui::Mesh::default();
         let segments = 370;
@@ -451,6 +272,7 @@ pub struct LogicRule {
     pub effect_spawn: Option<(u32, u32)>, // mat_type, count
     pub effect_consume_spawn: Option<(u32, u32, u32, u32)>, // consume_mat, consume_count, spawn_mat, spawn_count
     pub effect_emit_photon: Option<PhotonEmitParams>,
+    pub effect_spawn_slots: Option<Vec<SpawnSlotConfig>>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
@@ -484,11 +306,15 @@ pub struct MaterialDef {
     #[serde(default)]
     pub heat_conduction: Option<f32>,
     #[serde(default)]
+    pub surface_roughness: Option<f32>,
+    #[serde(default)]
     pub specific_heat_capacity: Option<f32>, // 光折射率 (0-100)
     #[serde(default)]
     pub reflectance_spectrum: Option<Vec<(f32, f32)>>,
     #[serde(default)]
     pub logic_rules: Vec<LogicRule>,
+    #[serde(default)]
+    pub phase_colors: Vec<(f32, f32, [u8; 4], Option<[u8; 4]>)>,
 }
 
 #[repr(C)]
@@ -519,10 +345,10 @@ pub struct MaterialPropsWGSL {
     pub refractive_index: f32,
     pub heat_conduction: f32,
     pub heat_capacity: f32,
-    pub ref_spectra: [f32; 8],
+    pub ref_spectra: [[f32; 4]; 2],
     pub phase_colors: [PhaseColorWGSL; 10],
     pub num_phase_colors: u32,
-    pub _pad_phase1: u32,
+    pub surface_roughness: f32,
     pub _pad_phase2: u32,
     pub _pad_phase3: u32,
 }
@@ -808,7 +634,7 @@ fn spawn_patch(
             if f32::hypot(px - center[0], py - center[1]) <= radius {
                 let mut replaced = false;
                 if let Some((ref mut eps, ref grid)) = replace_state {
-                    if let Some(idx) = grid.find_closest(px, py, dx * 0.6, eps) {
+                    if let Some(idx) = grid.find_closest(px, py, dx * 1.5, eps) {
                         eps[idx].mat_type = mat as u32;
                         eps[idx].inv_mass = inv_mass;
                         eps[idx].grav_scale = grav_scale;
@@ -936,7 +762,7 @@ fn spawn_rect(
             if px >= min_x && px <= max_x && py >= min_y && py <= max_y {
                 let mut replaced = false;
                 if let Some((ref mut eps, ref grid)) = replace_state {
-                    if let Some(idx) = grid.find_closest(px, py, dx * 0.6, eps) {
+                    if let Some(idx) = grid.find_closest(px, py, dx * 1.5, eps) {
                         eps[idx].mat_type = mat as u32;
                         eps[idx].inv_mass = inv_mass;
                         eps[idx].grav_scale = grav_scale;
@@ -1024,76 +850,13 @@ fn spawn_rect(
     }
 }
 
-
-// ============================================================================
-// Windows 7 / 8 Compatibility Fallbacks for Win8+ / Win10+ APIs
-// Prevents "无法定位程序输入点 GetSystemTimePreciseAsFileTime 于动态链接库 kernel32.dll 上"
-// ============================================================================
-#[cfg(all(target_os = "windows", target_env = "msvc"))]
-mod win7_compatibility {
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
-    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
-    use std::sync::atomic::{AtomicPtr, Ordering};
-    use std::sync::Once;
-
-    type FnGetSystemTimePreciseAsFileTime = unsafe extern "system" fn(*mut FILETIME);
-
-    static PRECISION_TIME_FN: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
-    static INIT_PRECISION_TIME: Once = Once::new();
-
-    #[no_mangle]
-    pub unsafe extern "system" fn GetSystemTimePreciseAsFileTime(lp_file_time: *mut FILETIME) {
-        INIT_PRECISION_TIME.call_once(|| {
-            let h_module = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
-            if h_module != 0 {
-                let proc_addr = GetProcAddress(h_module, b"GetSystemTimePreciseAsFileTime\0".as_ptr());
-                if let Some(addr) = proc_addr {
-                    PRECISION_TIME_FN.store(addr as *mut _, Ordering::Relaxed);
-                }
-            }
-        });
-
-        let ptr = PRECISION_TIME_FN.load(Ordering::Relaxed);
-        if !ptr.is_null() {
-            let f: FnGetSystemTimePreciseAsFileTime = std::mem::transmute(ptr);
-            f(lp_file_time);
-        } else {
-            // Windows 7 Fallback: Standard millisecond-resolution system time
-            GetSystemTimeAsFileTime(lp_file_time);
-        }
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn WaitOnAddress(
-        _address: *const std::ffi::c_void,
-        _compare_address: *const std::ffi::c_void,
-        _address_size: usize,
-        _milliseconds: u32,
-    ) -> i32 {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        1
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn WakeByAddressSingle(_address: *const std::ffi::c_void) {}
-
-    #[no_mangle]
-    pub unsafe extern "system" fn WakeByAddressAll(_address: *const std::ffi::c_void) {}
-}
-
-#[cfg(target_os = "android")]
-const DESIRED_PARTICLES: u32 = 100_000;
-#[cfg(not(target_os = "android"))]
 const DESIRED_PARTICLES: u32 = 25_000_000;
 const GRID_W: u32 = 1024;
 const GRID_H: u32 = 1024;
 
-#[cfg(not(target_os = "android"))]
 fn main() {
     let result = std::panic::catch_unwind(|| {
-        let event_loop = EventLoop::new().unwrap();
-        run_with_event_loop(event_loop);
+        pollster::block_on(run());
     });
     if let Err(e) = result {
         let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -1113,62 +876,6 @@ fn main() {
         }
     }
 }
-
-#[cfg(target_os = "android")]
-#[no_mangle]
-fn android_main(app: android_activity::AndroidApp) {
-    use winit::platform::android::EventLoopBuilderExtAndroid;
-
-    // 初始化 Android logcat 日志 - 所有 log::info/error 都会输出到 logcat
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Debug)
-            .with_tag("ParticleSim"),
-    );
-
-    log::info!("=== ParticleSim android_main 启动 ===");
-
-    // 设置 panic hook 让崩溃信息出现在 logcat 中
-    std::panic::set_hook(Box::new(|panic_info| {
-        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            s.to_string()
-        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "Unknown panic".to_string()
-        };
-        let location = if let Some(loc) = panic_info.location() {
-            format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
-        } else {
-            "unknown location".to_string()
-        };
-        log::error!("!!! PANIC at {} : {}", location, msg);
-    }));
-
-    log::info!("开始创建 EventLoop...");
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut builder = winit::event_loop::EventLoopBuilder::new();
-        builder.with_android_app(app);
-        log::info!("EventLoop builder 就绪, 开始 build...");
-        let event_loop = builder.build().unwrap();
-        log::info!("EventLoop 创建成功, 启动 run_with_event_loop...");
-        run_with_event_loop(event_loop);
-    }));
-    if let Err(e) = result {
-        let msg = if let Some(s) = e.downcast_ref::<&str>() {
-            s.to_string()
-        } else if let Some(s) = e.downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "Unknown error".to_string()
-        };
-        log::error!("!!! android_main catch_unwind 捕获错误: {}", msg);
-    }
-    log::info!("=== ParticleSim android_main 退出 ===");
-}
-
-#[cfg(target_os = "android")]
-fn main() {}
 
 fn render_inline_markdown(ui: &mut egui::Ui, text: &str) {
     let mut job = egui::text::LayoutJob::default();
@@ -1240,7 +947,7 @@ fn render_markdown(ui: &mut egui::Ui, text: &str) {
                         let icon_name = &text_line[6..end_idx];
                         let rest = &text_line[end_idx+1..];
                         
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
                         let c = rect.center();
                         let color = egui::Color32::from_rgb(100, 180, 255);
                         
@@ -1361,7 +1068,8 @@ fn render_markdown(ui: &mut egui::Ui, text: &str) {
     }
 }
 
-fn run_with_event_loop(event_loop: EventLoop<()>) {
+async fn run() {
+    let event_loop = EventLoop::new().unwrap();
     let window_icon = image::load_from_memory(include_bytes!("icon.ico")).ok().and_then(|img| {
         // Windows 任务栏图标最大支持 256x256
         let img = img.resize(256, 256, image::imageops::FilterType::Lanczos3);
@@ -1386,134 +1094,117 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
     let window = Arc::new(builder.build(&event_loop).unwrap());
     window.set_ime_allowed(true);
 
-    // ===== GPU 后端选择（优先 Vulkan，其次 OpenGLES/DX12）=====
+    // ===== GPU 后端选择（优先 Vulkan，其次 DX12）=====
+    // FXC (DX11) 不支持我们 compute shader 中的动态数组索引，必须用 Vulkan 或 DX12+DXC
     fn show_gpu_error(msg: &str) {
         eprintln!("{}", msg);
         #[cfg(target_os = "windows")]
         {
-            let text: Vec<u16> = format!("{} ", msg).encode_utf16().collect();
-            let title: Vec<u16> = "粒子模拟 5 - GPU 错误 ".encode_utf16().collect();
+            let text: Vec<u16> = format!("{}\0", msg).encode_utf16().collect();
+            let title: Vec<u16> = "粒子模拟 5 - GPU 错误\0".encode_utf16().collect();
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(0, text.as_ptr(), title.as_ptr(), 0x10); }
         }
     }
 
-    let (_instance, mut surface_opt, adapter, found_backend_name, device, queue, compute_mode) = pollster::block_on(async {
-        #[cfg(not(target_os = "android"))]
-        let gpu_backends: &[(wgpu::Backends, wgpu::Dx12Compiler, &str)] = &[
-            (wgpu::Backends::VULKAN, wgpu::Dx12Compiler::Fxc, "Vulkan"),
-            (wgpu::Backends::GL, wgpu::Dx12Compiler::Fxc, "OpenGLES"),
-            (wgpu::Backends::PRIMARY, wgpu::Dx12Compiler::Fxc, "Primary"),
-            (wgpu::Backends::DX12, wgpu::Dx12Compiler::Dxc { dxil_path: None, dxc_path: None }, "DX12+DXC"),
-            (wgpu::Backends::DX12, wgpu::Dx12Compiler::Fxc, "DX12+FXC"),
-        ];
+    // 按优先级尝试不同的后端 (GPU compute 完整支持)
+    let gpu_backends: &[(wgpu::Backends, wgpu::Dx12Compiler, &str)] = &[
+        (wgpu::Backends::VULKAN, wgpu::Dx12Compiler::Fxc, "Vulkan"),
+        (wgpu::Backends::DX12, wgpu::Dx12Compiler::Dxc { dxil_path: None, dxc_path: None }, "DX12+DXC"),
+        (wgpu::Backends::DX12, wgpu::Dx12Compiler::Fxc, "DX12+FXC"),
+    ];
 
-        #[cfg(target_os = "android")]
-        let gpu_backends: &[(wgpu::Backends, wgpu::Dx12Compiler, &str)] = &[
-            (wgpu::Backends::VULKAN, wgpu::Dx12Compiler::Fxc, "Vulkan"),
-            (wgpu::Backends::GL, wgpu::Dx12Compiler::Fxc, "OpenGLES"),
-        ];
+    let mut found: Option<(wgpu::Instance, wgpu::Surface, wgpu::Adapter, &str)> = None;
+    let mut compute_mode = ComputeMode::Gpu;
 
-        let mut found: Option<(wgpu::Instance, Option<wgpu::Surface>, wgpu::Adapter, &'static str)> = None;
-        let mut comp_mode = ComputeMode::Gpu;
-
-        for (backend, dx12_compiler, name) in gpu_backends {
-            let inst = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: *backend,
-                dx12_shader_compiler: dx12_compiler.clone(),
-                ..Default::default()
-            });
-            #[cfg(not(target_os = "android"))]
-            let surf_opt = inst.create_surface(window.clone()).ok();
-            #[cfg(target_os = "android")]
-            let surf_opt: Option<wgpu::Surface> = None;
-
+    for (backend, dx12_compiler, name) in gpu_backends {
+        let inst = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: *backend,
+            dx12_shader_compiler: dx12_compiler.clone(),
+            ..Default::default()
+        });
+        if let Ok(surf) = inst.create_surface(window.clone()) {
             if let Some(adap) = inst
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: surf_opt.as_ref(),
+                    compatible_surface: Some(&surf),
                     force_fallback_adapter: false,
                 })
                 .await
             {
                 println!("GPU 后端: {} - {}", name, adap.get_info().name);
-                found = Some((inst, surf_opt, adap, *name));
+                found = Some((inst, surf, adap, name));
                 break;
             }
-            println!("后端 {} 不可用，尝试下一个...", name);
         }
+        println!("后端 {} 不可用，尝试下一个...", name);
+    }
 
-        if found.is_none() {
-            println!("GPU compute 不可用，尝试 CPU 保底模式...");
-            let inst = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::all(),
-                ..Default::default()
-            });
-            #[cfg(not(target_os = "android"))]
-            let surf_opt = inst.create_surface(window.clone()).ok();
-            #[cfg(target_os = "android")]
-            let surf_opt: Option<wgpu::Surface> = None;
-
+    // GPU 后端全部失败 → 尝试 CPU 保底模式
+    if found.is_none() {
+        println!("GPU compute 不可用，尝试 CPU 保底模式...");
+        let inst = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        if let Ok(surf) = inst.create_surface(window.clone()) {
             if let Some(adap) = inst
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: surf_opt.as_ref(),
+                    compatible_surface: Some(&surf),
                     force_fallback_adapter: false,
                 })
                 .await
             {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let gpu_name_str = adap.get_info().name.clone();
-                        let msg = format!(
-                            "您的显卡 ({}) 不支持 GPU Compute Shader。\n\n将使用 CPU 计算模式（性能较低，粒子上限 64K）。\n\n是否继续？\0",
-                            gpu_name_str
-                        );
-                        let wmsg: Vec<u16> = msg.encode_utf16().collect();
-                        let wtitle: Vec<u16> = "粒子模拟 5 - CPU 模式\0".encode_utf16().collect();
-                        let result = unsafe {
-                            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                                0, wmsg.as_ptr(), wtitle.as_ptr(), 0x01 | 0x30
-                            )
-                        };
-                        if result != 1 {
-                            std::process::exit(0);
-                        }
+                #[cfg(target_os = "windows")]
+                {
+                    let gpu_name_str = adap.get_info().name.clone();
+                    let msg = format!(
+                        "您的显卡 ({}) 不支持 GPU Compute Shader。\n\n将使用 CPU 计算模式（性能较低，粒子上限 64K）。\n\n是否继续？\0",
+                        gpu_name_str
+                    );
+                    let wmsg: Vec<u16> = msg.encode_utf16().collect();
+                    let wtitle: Vec<u16> = "粒子模拟 5 - CPU 模式\0".encode_utf16().collect();
+                    let result = unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                            0, wmsg.as_ptr(), wtitle.as_ptr(), 0x01 | 0x30
+                        )
+                    };
+                    if result != 1 {
+                        std::process::exit(0);
                     }
-                    println!("CPU 模式激活: {}", adap.get_info().name);
-                    comp_mode = ComputeMode::Cpu;
-                    found = Some((inst, surf_opt, adap, "CPU"));
                 }
+                println!("CPU 模式激活: {}", adap.get_info().name);
+                compute_mode = ComputeMode::Cpu;
+                found = Some((inst, surf, adap, "CPU"));
+            }
         }
+    }
 
-        let (inst, surf, adap, found_name) = match found {
-            Some(f) => f,
-            None => {
-                show_gpu_error("无法找到任何可用的 GPU 适配器。\n\n请确保已安装显卡驱动程序。");
-                std::process::exit(1);
-            }
-        };
+    let (_instance, surface, adapter, found_backend_name) = match found {
+        Some(f) => f,
+        None => {
+            show_gpu_error("无法找到任何可用的 GPU 适配器。\n\n请确保已安装显卡驱动程序。");
+            std::process::exit(1);
+        }
+    };
 
-        let (dev, q) = match adap
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::empty(),
-                    required_limits: adap.limits(),
-                },
-                None,
-            )
-            .await
-        {
-            Ok(dq) => dq,
-            Err(e) => {
-                show_gpu_error(&format!("GPU 设备创建失败 ({}):\n{}\n\n请尝试更新显卡驱动程序。", found_name, e));
-                std::process::exit(1);
-            }
-        };
-
-        (inst, surf, adap, found_name, dev, q, comp_mode)
-    });
-
+    let (device, queue) = match adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter.limits(),
+            },
+            None,
+        )
+        .await
+    {
+        Ok(dq) => dq,
+        Err(e) => {
+            show_gpu_error(&format!("GPU 设备创建失败 ({}):\n{}\n\n请尝试更新显卡驱动程序。", found_backend_name, e));
+            std::process::exit(1);
+        }
+    };
 
     // ===== 获取显卡信息 =====
     let adapter_info = adapter.get_info();
@@ -1565,16 +1256,13 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
     println!("实际粒子上限: {} (期望: {}, 硬件上限: {})", num_particles, DESIRED_PARTICLES, gpu_max_particles);
 
     let size = window.inner_size();
-    let format = if let Some(surf) = &surface_opt {
-        let caps = surf.get_capabilities(&adapter);
-        caps.formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(caps.formats[0])
-    } else {
-        wgpu::TextureFormat::Rgba8UnormSrgb // Android fallback
-    };
+    let caps = surface.get_capabilities(&adapter);
+    let format = caps
+        .formats
+        .iter()
+        .find(|f| f.is_srgb())
+        .copied()
+        .unwrap_or(caps.formats[0]);
     let mut config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -1582,12 +1270,10 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
         height: size.height,
         present_mode: wgpu::PresentMode::AutoVsync,
         desired_maximum_frame_latency: 2,
-        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        alpha_mode: caps.alpha_modes[0],
         view_formats: vec![],
     };
-    if let Some(surf) = &surface_opt {
-        surf.configure(&device, &config);
-    }
+    surface.configure(&device, &config);
 
     // ===== Egui 鍒濆鍖?=====
     let egui_context = Context::default();
@@ -1999,8 +1685,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
     let mut right_pressed = false;
     let mut last_cursor: Option<[f64; 2]> = None;
 
-    let mut active_particles: u32 = 0;
-
+    let mut active_particles: u32 = 0; // 璧锋棤绮?
     let mut active_photons: u32 = 0;
     let mut photon_head: u32 = 0;
     let mut left_click_mode = LeftClickMode::DragForce;
@@ -2071,7 +1756,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
     let mut world_sources: Vec<WorldSource> = Vec::new();
     let mut next_source_id = 1u32;
 
-    let materials_file = std::fs::read_to_string("materials.json").unwrap_or_else(|_| include_str!("../materials.json").to_string());
+    let materials_file = std::fs::read_to_string("materials.json").unwrap_or_else(|_| "[]".to_string());
     let mut source_presets: Vec<SourcePreset> = match std::fs::read_to_string("source_presets.json") {
         Ok(json) => serde_json::from_str(&json).unwrap_or_else(|_| Vec::new()),
         Err(_) => Vec::new(),
@@ -2079,7 +1764,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
     let mut show_source_preset_window = false;
     let mut new_source_preset_name = String::new();
 
-    let mut materials: Vec<MaterialDef> = match serde_json::from_str(&materials_file) {
+    let mut materials: Vec<MaterialDef> = match serde_json::from_str::<Vec<MaterialDef>>(&materials_file) {
         Ok(m) => m,
         Err(e) => {
             println!("Load materials.json error: {}", e);
@@ -2110,7 +1795,9 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
     let mut new_material_refractive_index = 1.0f32;
     let mut new_material_heat_conduction = 1.0f32;
     let mut new_material_heat_capacity = 1.0f32;
+    let mut new_material_surface_roughness = 0.0f32;
     let mut new_material_reflectance_spectrum: Option<Vec<(f32, f32)>> = None;
+    let mut new_material_phase_colors: Vec<(f32, f32, [u8; 4], Option<[u8; 4]>)> = Vec::new();
 
     let mut selected_source_type = 1; // 0=鍏? 1=粒子, 2=引力
     let mut selected_edit_source_id: Option<u32> = None;
@@ -2163,10 +1850,39 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
     let _ = std::fs::create_dir_all("blueprints");
 
     // ===== 启动画面状态 =====
-    let mut splash_active = false;
-    let mut splash_fade_start: Option<std::time::Instant> = Some(std::time::Instant::now());
+    let mut splash_active = true;
+    let mut splash_fade_start: Option<std::time::Instant> = None;
     let splash_fade_duration = 1.0f32; // 渐出时长 1 秒
     let mut particle_capacity: u32 = num_particles; // 用户选择的粒子容量上限
+
+    // ===== 跑分测试状态 =====
+    // 状态: 0=空闲, 1=运行中, 2=完成
+    let mut bench_state: u32 = 0;
+    let mut bench_level: usize = 0; // 当前测试级别 (0-8)
+    let mut bench_start_time: Option<std::time::Instant> = None;
+    let mut bench_frame_count: u32 = 0;
+    let mut bench_total_dt: f32 = 0.0; // 累计帧时间
+    let mut bench_low_fps_time: f32 = 0.0; // 累计低帧率时间
+    let mut bench_last_frame: Option<std::time::Instant> = None;
+    let mut bench_particles_ready = false; // 粒子是否已写入
+    let mut bench_score: Option<u32> = None; // 跑分结果（粒子数）
+    let mut bench_last_passed_level: Option<usize> = None; // 最后通过的级别
+    let mut bench_avg_fps_at_fail: f32 = 0.0; // 失败时的平均帧率
+
+    // 读取持久化跑分结果
+    let bench_file_path = "benchmark_score.txt";
+    if let Ok(content) = std::fs::read_to_string(bench_file_path) {
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.len() >= 2 {
+            if let Ok(score) = lines[0].trim().parse::<u32>() {
+                let saved_gpu = lines[1].trim();
+                if saved_gpu == gpu_name {
+                    bench_score = Some(score);
+                    // bench_state 保持为 0，防止每次启动都弹出跑分测试窗口
+                }
+            }
+        }
+    }
 
     // 粒子容量预设块定义: (粒子数, 标签, 方块边长, 颜色RGB)
     let presets: [(u32, &str, f32, [u8; 3]); 9] = [
@@ -2196,19 +1912,9 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
         while let Ok((particles, mats)) = logic_task_rx.recv() {
             let mut events = Vec::new();
             
-            let active_mat_ids: std::collections::HashSet<usize> = mats.iter().enumerate()
-                .filter(|(_, m)| m.logic_rules.iter().any(|r| r.is_active))
-                .map(|(idx, _)| idx)
-                .collect();
-            if active_mat_ids.is_empty() {
-                let _ = logic_result_tx.send(events);
-                continue;
-            }
-
             for (i, p) in particles.iter().enumerate() {
                 if (p.mat_type & 0x40000000) != 0 { continue; }
                 let mat_id = (p.mat_type & 0xFF) as usize;
-                if !active_mat_ids.contains(&mat_id) { continue; }
                 if let Some(m) = mats.get(mat_id) {
                     if m.logic_rules.is_empty() { continue; }
                     
@@ -2291,6 +1997,48 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                     });
                                 }
                             }
+                            if let Some(slots) = &rule.effect_spawn_slots {
+                                for slot in slots {
+                                    let mut req_met = true;
+                                    if let Some(req) = slot.req_mat {
+                                        let link = p.links[slot.slot_idx];
+                                        if link == -1 {
+                                            req_met = false;
+                                        } else {
+                                            let other_p = &particles[link as usize];
+                                            if other_p.mat_type != req {
+                                                req_met = false;
+                                            }
+                                        }
+                                    }
+                                    
+                                    if req_met {
+                                        let target_link = p.links[slot.slot_idx];
+                                        if target_link == -1 || slot.force_spawn {
+                                            let angle = p.angle + std::f32::consts::PI * 2.0 / 6.0 * (slot.slot_idx as f32);
+                                            let dist = 0.02; // A bit outside, so physics can resolve
+                                            events.push(LogicEvent::SpawnSlot {
+                                                mat_type: slot.spawn_mat,
+                                                pos: [
+                                                    p.pos[0] + angle.cos() * dist,
+                                                    p.pos[1] + angle.sin() * dist
+                                                ],
+                                                parent_id: i as u32,
+                                                slot_idx: slot.slot_idx as u8,
+                                                connected: slot.connected
+                                            });
+                                        } else {
+                                            if slot.replace_existing || slot.req_mat.is_some() {
+                                                // If replace_existing is true, or (legacy) if req_mat is met and it's occupied
+                                                events.push(LogicEvent::Mutate {
+                                                    id: target_link as u32,
+                                                    new_mat: slot.spawn_mat
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(params) = &rule.effect_emit_photon {
                                 let mut holes = Vec::new();
                                 for k in 0..6 {
@@ -2339,6 +2087,8 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
     let mut alive_photons = 0u32;
     let (stats_map_tx, stats_map_rx) = std::sync::mpsc::channel();
     let mut stats_mapping_active = false;
+    let mut popup_target: Option<(usize, usize)> = None;
+    let mut popup_target_req: Option<(usize, usize)> = None;
 
     // ===== 主循环 =====
     event_loop
@@ -2363,9 +2113,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                         if new_size.width > 0 && new_size.height > 0 {
                             config.width = new_size.width;
                             config.height = new_size.height;
-                            if let Some(surf) = &surface_opt {
-        surf.configure(&device, &config);
-    }
+                            surface.configure(&device, &config);
                             msaa_view = create_msaa_tex(
                                 &device,
                                 config.format,
@@ -2719,47 +2467,163 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                         white,
                                     );
 
-                                    // 容量对比进度条（对比预设 100万）
+                                    // ===== 跑分测试区域 =====
                                     y += 45.0;
                                     let bar_w = 320.0;
                                     let bar_h = 22.0;
                                     let bar_left = center_x - bar_w / 2.0;
-                                    let bar_rect = egui::Rect::from_min_size(
-                                        egui::pos2(bar_left, y),
-                                        egui::vec2(bar_w, bar_h),
-                                    );
-                                    // 底框
-                                    painter.rect_filled(
-                                        bar_rect, 4.0,
-                                        egui::Color32::from_rgba_unmultiplied(40, 40, 40, a),
-                                    );
-                                    painter.rect_stroke(
-                                        bar_rect, 4.0,
-                                        egui::Stroke::new(1.0, dim),
-                                    );
-                                    // 填充（ratio 相对于 100万）
-                                    let reference = 1_000_000u32;
-                                    let ratio = (num_particles as f32 / reference as f32).min(1.0);
-                                    let fill_rect = egui::Rect::from_min_size(
-                                        egui::pos2(bar_left + 2.0, y + 2.0),
-                                        egui::vec2((bar_w - 4.0) * ratio, bar_h - 4.0),
-                                    );
-                                    let bar_color = if ratio > 0.7 {
-                                        egui::Color32::from_rgba_unmultiplied(80, 200, 120, a)
-                                    } else if ratio > 0.3 {
-                                        egui::Color32::from_rgba_unmultiplied(220, 180, 50, a)
+
+                                    if bench_score.is_some() || bench_state == 2 {
+                                        // 已有跑分结果：显示分值进度条
+                                        let score = bench_score.unwrap_or(0);
+                                        let reference = 4_000_000u32;
+                                        let ratio = (score as f32 / reference as f32).min(1.0);
+                                        let bar_rect = egui::Rect::from_min_size(
+                                            egui::pos2(bar_left, y),
+                                            egui::vec2(bar_w, bar_h),
+                                        );
+                                        painter.rect_filled(bar_rect, 4.0, egui::Color32::from_rgba_unmultiplied(40, 40, 40, a));
+                                        painter.rect_stroke(bar_rect, 4.0, egui::Stroke::new(1.0, dim));
+                                        let fill_rect = egui::Rect::from_min_size(
+                                            egui::pos2(bar_left + 2.0, y + 2.0),
+                                            egui::vec2((bar_w - 4.0) * ratio, bar_h - 4.0),
+                                        );
+                                        let bar_color = if ratio > 0.5 {
+                                            egui::Color32::from_rgba_unmultiplied(80, 200, 120, a)
+                                        } else if ratio > 0.2 {
+                                            egui::Color32::from_rgba_unmultiplied(220, 180, 50, a)
+                                        } else {
+                                            egui::Color32::from_rgba_unmultiplied(220, 80, 60, a)
+                                        };
+                                        painter.rect_filled(fill_rect, 3.0, bar_color);
+                                        let score_text = if score >= 1_000_000 {
+                                            format!("跑分: {}M 粒子", score / 1_000_000)
+                                        } else if score >= 1_000 {
+                                            format!("跑分: {}K 粒子", score / 1_000)
+                                        } else {
+                                            format!("跑分: {} 粒子", score)
+                                        };
+                                        painter.text(
+                                            egui::pos2(center_x, y + bar_h / 2.0),
+                                            egui::Align2::CENTER_CENTER,
+                                            &score_text,
+                                            egui::FontId::proportional(13.0),
+                                            white,
+                                        );
+                                        // "重新跑分" 按钮
+                                        if splash_fade_start.is_none() {
+                                            y += bar_h + 8.0;
+                                            let btn_w = 100.0;
+                                            let btn_h = 24.0;
+                                            let btn_rect = egui::Rect::from_min_size(
+                                                egui::pos2(center_x - btn_w / 2.0, y),
+                                                egui::vec2(btn_w, btn_h),
+                                            );
+                                            let mouse_pos = ui.input(|i| i.pointer.hover_pos());
+                                            let hovered = mouse_pos.map_or(false, |p| btn_rect.contains(p));
+                                            let clicked = hovered && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+                                            let btn_bg = if hovered {
+                                                egui::Color32::from_rgba_unmultiplied(80, 80, 80, a)
+                                            } else {
+                                                egui::Color32::from_rgba_unmultiplied(55, 55, 55, a)
+                                            };
+                                            painter.rect_filled(btn_rect, 4.0, btn_bg);
+                                            painter.rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, dim));
+                                            painter.text(
+                                                btn_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                "重新跑分",
+                                                egui::FontId::proportional(12.0),
+                                                gray,
+                                            );
+                                            if clicked {
+                                                bench_state = 1;
+                                                bench_level = 0;
+                                                bench_start_time = None;
+                                                bench_frame_count = 0;
+                                                bench_total_dt = 0.0;
+                                                bench_low_fps_time = 0.0;
+                                                bench_last_frame = None;
+                                                bench_particles_ready = false;
+                                                bench_score = None;
+                                                bench_last_passed_level = None;
+                                                bench_avg_fps_at_fail = 0.0;
+                                                particle_capacity = num_particles;
+                                                splash_fade_start = Some(std::time::Instant::now());
+                                            }
+                                            y += btn_h;
+                                        }
+                                    } else if bench_state == 1 {
+                                        // 跑分进行中：显示进度条和当前状态
+                                        let total_levels = presets.iter().filter(|p| p.0 <= num_particles).count().max(1);
+                                        let progress = bench_level as f32 / total_levels as f32;
+                                        let bar_rect = egui::Rect::from_min_size(
+                                            egui::pos2(bar_left, y),
+                                            egui::vec2(bar_w, bar_h),
+                                        );
+                                        painter.rect_filled(bar_rect, 4.0, egui::Color32::from_rgba_unmultiplied(40, 40, 40, a));
+                                        painter.rect_stroke(bar_rect, 4.0, egui::Stroke::new(1.0, dim));
+                                        // 动画填充
+                                        let fill_rect = egui::Rect::from_min_size(
+                                            egui::pos2(bar_left + 2.0, y + 2.0),
+                                            egui::vec2((bar_w - 4.0) * progress, bar_h - 4.0),
+                                        );
+                                        painter.rect_filled(fill_rect, 3.0, egui::Color32::from_rgba_unmultiplied(100, 160, 255, a));
+                                        let avg_fps = if bench_total_dt > 0.0 { bench_frame_count as f32 / bench_total_dt } else { 0.0 };
+                                        let level_label = if bench_level < presets.len() { presets[bench_level].1 } else { "?" };
+                                        painter.text(
+                                            egui::pos2(center_x, y + bar_h / 2.0),
+                                            egui::Align2::CENTER_CENTER,
+                                            &format!("测试中: {} ({:.0} FPS)", level_label, avg_fps),
+                                            egui::FontId::proportional(13.0),
+                                            white,
+                                        );
                                     } else {
-                                        egui::Color32::from_rgba_unmultiplied(220, 80, 60, a)
-                                    };
-                                    painter.rect_filled(fill_rect, 3.0, bar_color);
-                                    // 百分比文字
-                                    painter.text(
-                                        egui::pos2(center_x, y + bar_h / 2.0),
-                                        egui::Align2::CENTER_CENTER,
-                                        format!("{:.0}%  (基准: 100万)", ratio * 100.0),
-                                        egui::FontId::proportional(13.0),
-                                        white,
-                                    );
+                                        // 初始状态(bench_state==0): 显示"跑分测试"按钮
+                                        if splash_fade_start.is_none() {
+                                            let btn_w = 160.0;
+                                            let btn_h = 36.0;
+                                            let btn_rect = egui::Rect::from_min_size(
+                                                egui::pos2(center_x - btn_w / 2.0, y),
+                                                egui::vec2(btn_w, btn_h),
+                                            );
+                                            // 使用 pointer 直接检测
+                                            let mouse_pos = ui.input(|i| i.pointer.hover_pos());
+                                            let hovered = mouse_pos.map_or(false, |p| btn_rect.contains(p));
+                                            let clicked = hovered && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+
+                                            let btn_bg = if hovered {
+                                                egui::Color32::from_rgba_unmultiplied(80, 130, 220, a)
+                                            } else {
+                                                egui::Color32::from_rgba_unmultiplied(50, 90, 180, a)
+                                            };
+                                            painter.rect_filled(btn_rect, 6.0, btn_bg);
+                                            painter.rect_stroke(btn_rect, 6.0, egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(120, 180, 255, a)));
+                                            painter.text(
+                                                btn_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                "跑分测试",
+                                                egui::FontId::proportional(18.0),
+                                                white,
+                                            );
+                                            if clicked {
+                                                bench_state = 1;
+                                                bench_level = 0;
+                                                bench_start_time = None;
+                                                bench_frame_count = 0;
+                                                bench_total_dt = 0.0;
+                                                bench_low_fps_time = 0.0;
+                                                bench_last_frame = None;
+                                                bench_particles_ready = false;
+                                                bench_score = None;
+                                                bench_last_passed_level = None;
+                                                bench_avg_fps_at_fail = 0.0;
+                                                particle_capacity = num_particles;
+                                                splash_fade_start = Some(std::time::Instant::now());
+                                            }
+                                        }
+                                    }
+
 
                                     // ===== 粒子容量选择方块（无卡片，底边对齐） =====
                                     if splash_fade_start.is_none() {
@@ -2795,7 +2659,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                     egui::pos2(cell_cx - cell_w / 2.0, sq_bottom - max_sq),
                                                     egui::pos2(cell_cx + cell_w / 2.0, sq_bottom + text_h + 4.0),
                                                 );
-                                                let sense = if available { egui::Sense::click() } else { egui::Sense::hover() };
+                                                let sense = if available { egui::Sense::click() } else { egui::Sense::click() };
                                                 let resp = ui.allocate_rect(hit_rect, sense);
 
                                                 // 彩色方块（底边对齐）
@@ -2837,7 +2701,8 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                     }
                                 });
 
-                            // Splash 专用渲染路径（不运行任何计算着色器）
+
+                            // Splash 专用渲染路径（纯 egui，不运行任何计算着色器）
                             let full_output = egui_context.end_frame();
                             let paint_jobs = egui_context.tessellate(full_output.shapes, full_output.pixels_per_point);
                             let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -2850,8 +2715,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                             for id in &full_output.textures_delta.free {
                                 egui_renderer.free_texture(id);
                             }
-                            let surf = if let Some(s) = &surface_opt { s } else { return; };
-                            let output = match surf.get_current_texture() {
+                            let output = match surface.get_current_texture() {
                                 Ok(t) => t,
                                 Err(_) => return,
                             };
@@ -3639,7 +3503,9 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                                     new_material_refractive_index = m.refractive_index.unwrap_or(1.0);
                                                         new_material_heat_conduction = m.heat_conduction.unwrap_or(1.0);
                                                         new_material_heat_capacity = m.specific_heat_capacity.unwrap_or(1.0);
+                                                        new_material_surface_roughness = m.surface_roughness.unwrap_or(0.0);
                                                         new_material_reflectance_spectrum = m.reflectance_spectrum.clone();
+                                                        new_material_phase_colors = m.phase_colors.clone();
                                                                 }
                                                                 show_add_material_window = true;
                                                                 ui.close_menu();
@@ -3725,7 +3591,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                             let bg_text_color = ui.visuals().text_color();
                                                             let text_str = format!("{}: {:.1}", label, val);
                                                             
-                                                            let (rect, _resp) = ui.allocate_exact_size(egui::vec2(130.0, 18.0), egui::Sense::hover());
+                                                            let (rect, _resp) = ui.allocate_exact_size(egui::vec2(130.0, 18.0), egui::Sense::click());
                                                             if ui.is_rect_visible(rect) {
                                                                 let bg_color = ui.visuals().extreme_bg_color;
                                                                 ui.painter().rect_filled(rect, 4.0, bg_color);
@@ -3761,7 +3627,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                         let luminance = 0.299 * bar_color.r() as f32 + 0.587 * bar_color.g() as f32 + 0.114 * bar_color.b() as f32;
                                                         let fill_text_color = if luminance > 128.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };
                                                         let bg_text_color = ui.visuals().text_color();
-                                                        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(130.0, 18.0), egui::Sense::hover());
+                                                        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(130.0, 18.0), egui::Sense::click());
                                                         if ui.is_rect_visible(rect) {
                                                             let bg_color = ui.visuals().extreme_bg_color;
                                                             ui.painter().rect_filled(rect, 4.0, bg_color);
@@ -3785,7 +3651,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                     ui.add_space(8.0);
                                                     {
                                                         let size = egui::vec2(90.0, 90.0);
-                                                        let (rect, _resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+                                                        let (rect, _resp) = ui.allocate_exact_size(size, egui::Sense::click());
                                                         
                                                         let mat = current_material;
                                                         let simulated_speed = match mat {
@@ -3894,7 +3760,9 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                         new_material_refractive_index = 1.0f32;
                                         new_material_heat_conduction = 1.0f32;
                                         new_material_heat_capacity = 1.0f32;
+                                        new_material_surface_roughness = 0.0f32;
                                         new_material_reflectance_spectrum = None;
+                                        new_material_phase_colors = Vec::new();
                                         show_add_material_window = true;
                                     }
                                 });
@@ -3947,6 +3815,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                     ui.horizontal(|ui| { ui.label("折射率:"); ui.add(egui::DragValue::new(&mut new_material_refractive_index).clamp_range(1.0f32..=100.0).speed(0.01)); });
                                     ui.horizontal(|ui| { ui.label("导热系数:"); ui.add(egui::DragValue::new(&mut new_material_heat_conduction).clamp_range(0.0f32..=100.0).speed(0.01)); });
                                     ui.horizontal(|ui| { ui.label("比热容:"); ui.add(egui::DragValue::new(&mut new_material_heat_capacity).clamp_range(0.01f32..=100.0).speed(0.01)); });
+                                    ui.horizontal(|ui| { ui.label("表面粗糙度(0平滑/1漫射):"); ui.add(egui::DragValue::new(&mut new_material_surface_roughness).clamp_range(0.0f32..=1.0).speed(0.01)); });
                                     
                                     ui.horizontal(|ui| {
                                         let mut has_val = new_material_reflectance_spectrum.is_some();
@@ -3983,6 +3852,48 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                     }
                                     
                                     ui.separator();
+                                    egui::CollapsingHeader::new("多相变颜色 (温度 -> 颜色)").default_open(true).show(ui, |ui| {
+                                        let mut to_remove_phase = None;
+                                        for (i, (min_temp, max_temp, color, color2_opt)) in new_material_phase_colors.iter_mut().enumerate() {
+                                            ui.vertical(|ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(format!("阶段 {}:", i + 1));
+                                                    ui.add(egui::DragValue::new(min_temp).speed(10.0).prefix("从 "));
+                                                    ui.add(egui::DragValue::new(max_temp).speed(10.0).prefix("到 "));
+                                                    let mut c = [color[0], color[1], color[2]];
+                                                    ui.color_edit_button_srgb(&mut c);
+                                                    color[0] = c[0]; color[1] = c[1]; color[2] = c[2]; color[3] = 255;
+                                                    
+                                                    let mut is_noisy = color2_opt.is_some();
+                                                    ui.checkbox(&mut is_noisy, "双色杂色");
+                                                    if is_noisy && color2_opt.is_none() {
+                                                        *color2_opt = Some([color[0], color[1], color[2], 255]);
+                                                    } else if !is_noisy {
+                                                        *color2_opt = None;
+                                                    }
+                                                    if let Some(c2_arr) = color2_opt {
+                                                        let mut c2 = [c2_arr[0], c2_arr[1], c2_arr[2]];
+                                                        ui.color_edit_button_srgb(&mut c2);
+                                                        *color2_opt = Some([c2[0], c2[1], c2[2], 255]);
+                                                    }
+                                                    
+                                                    if ui.button("🗑").on_hover_text("删除此相变阶段").clicked() {
+                                                        to_remove_phase = Some(i);
+                                                    }
+                                                });
+                                            });
+                                        }
+                                        if let Some(idx) = to_remove_phase {
+                                            new_material_phase_colors.remove(idx);
+                                        }
+                                        if new_material_phase_colors.len() < 10 {
+                                            if ui.button("+ 添加相变阶段").clicked() {
+                                                new_material_phase_colors.push((0.0, 1000.0, [255, 255, 255, 255], None));
+                                            }
+                                        }
+                                    });
+
+                                    ui.separator();
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new("逻辑规则:").strong());
                                         if ui.button("+ 添加规则").clicked() {
@@ -4007,187 +3918,542 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                         }
                                                     });
                                                     
-                                                    ui.separator();
-                                                    ui.label(egui::RichText::new("【 触发条件 】").strong().color(egui::Color32::LIGHT_BLUE));
-                                                    
-                                                    // Temp trigger
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.trigger_temp.is_some();
-                                                        if ui.checkbox(&mut has_val, "温度范围 (°C)").changed() {
-                                                            rule.trigger_temp = if has_val { Some((0.0, 100.0)) } else { None };
-                                                        }
-                                                        if let Some((min, max)) = &mut rule.trigger_temp {
-                                                            ui.add(egui::DragValue::new(min).speed(1.0).prefix("Min: "));
-                                                            ui.add(egui::DragValue::new(max).speed(1.0).prefix("Max: "));
-                                                        }
-                                                    });
-
-                                                    // Charge trigger
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.trigger_charge.is_some();
-                                                        if ui.checkbox(&mut has_val, "电能范围").changed() {
-                                                            rule.trigger_charge = if has_val { Some((0.0, 100.0)) } else { None };
-                                                        }
-                                                        if let Some((min, max)) = &mut rule.trigger_charge {
-                                                            ui.add(egui::DragValue::new(min).speed(1.0).prefix("Min: "));
-                                                            ui.add(egui::DragValue::new(max).speed(1.0).prefix("Max: "));
-                                                        }
-                                                    });
-
-                                                    // Links trigger
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.trigger_links.is_some();
-                                                        if ui.checkbox(&mut has_val, "链接数量").changed() {
-                                                            rule.trigger_links = if has_val { Some((0, 6)) } else { None };
-                                                        }
-                                                        if let Some((min, max)) = &mut rule.trigger_links {
-                                                            ui.add(egui::DragValue::new(min).speed(1).clamp_range(0..=6).prefix("Min: "));
-                                                            ui.add(egui::DragValue::new(max).speed(1).clamp_range(0..=6).prefix("Max: "));
-                                                        }
-                                                    });
-                                                    
-                                                    // Mat links trigger
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.trigger_mat_links.is_some();
-                                                        if ui.checkbox(&mut has_val, "特定材质链接").changed() {
-                                                            rule.trigger_mat_links = if has_val { Some((0, 1, 6, 1.0)) } else { None };
-                                                        }
-                                                        if let Some((mat, min, max, prob)) = &mut rule.trigger_mat_links {
-                                                            let selected_name = materials.get(*mat as usize).map(|m| m.name.clone()).unwrap_or_else(|| format!("ID: {}", mat));
-                                                            egui::ComboBox::from_id_source(format!("trigger_mat_links_{}", i))
-                                                                .selected_text(selected_name)
-                                                                .show_ui(ui, |ui| {
-                                                                    for (m_idx, m) in materials.iter().enumerate() {
-                                                                        ui.selectable_value(mat, m_idx as u32, &m.name);
+ui.columns(3, |columns| {
+                                                        columns[0].vertical(|ui| {
+                                                            ui.separator();
+                                                            ui.label(egui::RichText::new("【 触发条件 】").strong().color(egui::Color32::LIGHT_BLUE));
+                                                            
+                                                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.trigger_temp.is_some();
+                                                                    if ui.checkbox(&mut has_val, "温度范围 (°C)").changed() {
+                                                                        rule.trigger_temp = if has_val { Some((0.0, 100.0)) } else { None };
+                                                                    }
+                                                                    if let Some((min, max)) = &mut rule.trigger_temp {
+                                                                        ui.add(egui::DragValue::new(min).speed(1.0).prefix("Min: "));
+                                                                        ui.add(egui::DragValue::new(max).speed(1.0).prefix("Max: "));
                                                                     }
                                                                 });
-                                                            ui.add(egui::DragValue::new(min).speed(1).clamp_range(0..=6).prefix("Min: "));
-                                                            ui.add(egui::DragValue::new(max).speed(1).clamp_range(0..=6).prefix("Max: "));
-                                                            ui.add(egui::DragValue::new(prob).speed(0.01).clamp_range(0.0..=1.0).prefix("概率: "));
-                                                        }
-                                                    });
-                                                    
-                                                    // Pull trigger
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.trigger_pull.is_some();
-                                                        if ui.checkbox(&mut has_val, "受到拉力").changed() {
-                                                            rule.trigger_pull = if has_val { Some((0.0, 10.0)) } else { None };
-                                                        }
-                                                        if let Some((min, max)) = &mut rule.trigger_pull {
-                                                            ui.add(egui::DragValue::new(min).speed(0.01).prefix("Min: "));
-                                                            ui.add(egui::DragValue::new(max).speed(0.01).prefix("Max: "));
-                                                        }
-                                                    });
-                                                    
-                                                    // Push trigger
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.trigger_push.is_some();
-                                                        if ui.checkbox(&mut has_val, "受到压力").changed() {
-                                                            rule.trigger_push = if has_val { Some((0.0, 10.0)) } else { None };
-                                                        }
-                                                        if let Some((min, max)) = &mut rule.trigger_push {
-                                                            ui.add(egui::DragValue::new(min).speed(0.01).prefix("Min: "));
-                                                            ui.add(egui::DragValue::new(max).speed(0.01).prefix("Max: "));
-                                                        }
-                                                    });
-                                                    
-                                                    ui.separator();
-                                                    ui.label(egui::RichText::new("【 触发效果 】").strong().color(egui::Color32::LIGHT_GREEN));
 
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.effect_temp_add.is_some();
-                                                        if ui.checkbox(&mut has_val, "温度变化").changed() {
-                                                            rule.effect_temp_add = if has_val { Some(10.0) } else { None };
-                                                        }
-                                                        if let Some(val) = &mut rule.effect_temp_add {
-                                                            ui.add(egui::DragValue::new(val).speed(1.0).prefix("增/减量: "));
-                                                        }
-                                                    });
-
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.effect_charge_add.is_some();
-                                                        if ui.checkbox(&mut has_val, "电能变化").changed() {
-                                                            rule.effect_charge_add = if has_val { Some(10.0) } else { None };
-                                                        }
-                                                        if let Some(val) = &mut rule.effect_charge_add {
-                                                            ui.add(egui::DragValue::new(val).speed(1.0).prefix("增/减量: "));
-                                                        }
-                                                    });
-
-                                                    ui.checkbox(&mut rule.effect_break_links, "断开所有链接");
-                                                    ui.checkbox(&mut rule.effect_delete_self, "删除自身 (消灭)");
-
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.effect_mutate.is_some();
-                                                        if ui.checkbox(&mut has_val, "突变为其它材质").changed() {
-                                                            rule.effect_mutate = if has_val { Some(0) } else { None };
-                                                        }
-                                                        if let Some(val) = &mut rule.effect_mutate {
-                                                            let selected_name = materials.get(*val as usize).map(|m| m.name.clone()).unwrap_or_else(|| format!("ID: {}", val));
-                                                            egui::ComboBox::from_id_source(format!("mutate_combo_{}", i))
-                                                                .selected_text(selected_name)
-                                                                .show_ui(ui, |ui| {
-                                                                    for (m_idx, m) in materials.iter().enumerate() {
-                                                                        ui.selectable_value(val, m_idx as u32, &m.name);
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.trigger_charge.is_some();
+                                                                    if ui.checkbox(&mut has_val, "电能范围").changed() {
+                                                                        rule.trigger_charge = if has_val { Some((0.0, 100.0)) } else { None };
+                                                                    }
+                                                                    if let Some((min, max)) = &mut rule.trigger_charge {
+                                                                        ui.add(egui::DragValue::new(min).speed(1.0).prefix("Min: "));
+                                                                        ui.add(egui::DragValue::new(max).speed(1.0).prefix("Max: "));
                                                                     }
                                                                 });
-                                                        }
-                                                    });
 
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.effect_spawn.is_some();
-                                                        if ui.checkbox(&mut has_val, "强制生成新粒子").changed() {
-                                                            rule.effect_spawn = if has_val { Some((0, 1)) } else { None };
-                                                        }
-                                                        if let Some((mat, count)) = &mut rule.effect_spawn {
-                                                            let selected_name = materials.get(*mat as usize).map(|m| m.name.clone()).unwrap_or_else(|| format!("ID: {}", mat));
-                                                            egui::ComboBox::from_id_source(format!("spawn_combo_{}", i))
-                                                                .selected_text(selected_name)
-                                                                .show_ui(ui, |ui| {
-                                                                    for (m_idx, m) in materials.iter().enumerate() {
-                                                                        ui.selectable_value(mat, m_idx as u32, &m.name);
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.trigger_links.is_some();
+                                                                    if ui.checkbox(&mut has_val, "链接数量").changed() {
+                                                                        rule.trigger_links = if has_val { Some((0, 6)) } else { None };
+                                                                    }
+                                                                    if let Some((min, max)) = &mut rule.trigger_links {
+                                                                        ui.add(egui::DragValue::new(min).speed(1).clamp_range(0..=12).prefix("Min: "));
+                                                                        ui.add(egui::DragValue::new(max).speed(1).clamp_range(0..=12).prefix("Max: "));
                                                                     }
                                                                 });
-                                                            ui.add(egui::DragValue::new(count).speed(1).clamp_range(1..=100).prefix("数量: "));
-                                                        }
-                                                    });
-                                                    
-                                                    // Emit photon
-                                                    ui.horizontal(|ui| {
-                                                        let mut has_val = rule.effect_emit_photon.is_some();
-                                                        if ui.checkbox(&mut has_val, "发射光子").changed() {
-                                                            rule.effect_emit_photon = if has_val { Some(PhotonEmitParams::default()) } else { None };
-                                                        }
-                                                        if let Some(params) = &mut rule.effect_emit_photon {
-                                                            ui.add(egui::DragValue::new(&mut params.count).speed(1).clamp_range(1..=100).prefix("数量: "));
-                                                            ui.add(egui::DragValue::new(&mut params.energy).speed(0.01).prefix("能量: "));
-                                                            ui.add(egui::DragValue::new(&mut params.speed).speed(0.1).prefix("速度: "));
-                                                            ui.add(egui::DragValue::new(&mut params.lifetime).speed(0.1).prefix("寿命: "));
-                                                            ui.checkbox(&mut params.force_spawn, "强制生成 (无视空穴)");
-                                                        }
-                                                    });
-                                                    if let Some(params) = &mut rule.effect_emit_photon {
-                                                        ui.horizontal(|ui| {
-                                                            ui.label("光子波段 (nm):");
-                                                            if ui.button("+ 添加波段").clicked() {
-                                                                params.wavelength_ranges.push((400.0, 700.0));
-                                                            }
+
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.trigger_pull.is_some();
+                                                                    if ui.checkbox(&mut has_val, "受到拉力").changed() {
+                                                                        rule.trigger_pull = if has_val { Some((1.0, 100.0)) } else { None };
+                                                                    }
+                                                                    if let Some((min, max)) = &mut rule.trigger_pull {
+                                                                        ui.add(egui::DragValue::new(min).speed(1.0).prefix("Min: "));
+                                                                        ui.add(egui::DragValue::new(max).speed(1.0).prefix("Max: "));
+                                                                    }
+                                                                });
+
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.trigger_push.is_some();
+                                                                    if ui.checkbox(&mut has_val, "受到压力").changed() {
+                                                                        rule.trigger_push = if has_val { Some((1.0, 100.0)) } else { None };
+                                                                    }
+                                                                    if let Some((min, max)) = &mut rule.trigger_push {
+                                                                        ui.add(egui::DragValue::new(min).speed(1.0).prefix("Min: "));
+                                                                        ui.add(egui::DragValue::new(max).speed(1.0).prefix("Max: "));
+                                                                    }
+                                                                });
+                                                            });
+
+                                                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.trigger_mat_links.is_some();
+                                                                    if ui.checkbox(&mut has_val, "特定材质链接").changed() {
+                                                                        rule.trigger_mat_links = if has_val { Some((0, 1, 6, 1.0)) } else { None };
+                                                                    }
+                                                                    if let Some((mat, min_c, max_c, force)) = &mut rule.trigger_mat_links {
+                                                                        let selected_name = materials.get(*mat as usize).map(|m| m.name.clone()).unwrap_or_else(|| format!("ID: {}", mat));
+                                                                        egui::ComboBox::from_id_source(format!("trigger_mat_combo_{}", i))
+                                                                            .selected_text(selected_name)
+                                                                            .show_ui(ui, |ui| {
+                                                                                for (m_idx, m) in materials.iter().enumerate() {
+                                                                                    ui.selectable_value(mat, m_idx as u32, &m.name);
+                                                                                }
+                                                                            });
+                                                                        ui.add(egui::DragValue::new(min_c).speed(1).clamp_range(0..=12).prefix("Min: "));
+                                                                        ui.add(egui::DragValue::new(max_c).speed(1).clamp_range(0..=12).prefix("Max: "));
+                                                                        ui.add(egui::DragValue::new(force).speed(0.1).prefix("力: "));
+                                                                    }
+                                                                });
+                                                            });
                                                         });
-                                                        draw_spectrum_bar(ui, Some(&params.wavelength_ranges));
-                                                        let mut to_remove = None;
-                                                        for (w_i, w_range) in params.wavelength_ranges.iter_mut().enumerate() {
-                                                            ui.horizontal(|ui| {
-                                                                ui.add(egui::DragValue::new(&mut w_range.0).speed(1.0).prefix("Min: "));
-                                                                ui.add(egui::DragValue::new(&mut w_range.1).speed(1.0).prefix("Max: "));
-                                                                if ui.button("X").clicked() {
-                                                                    to_remove = Some(w_i);
+
+                                                        columns[1].vertical_centered(|ui| {
+                                                            // === Draw Spawn & Requirement Slots ===
+                                                            let (sim_rect, response) = ui.allocate_exact_size(egui::vec2(320.0, 320.0), egui::Sense::click());
+                                                            let painter = ui.painter_at(sim_rect);
+                                                            let sim_center = sim_rect.center();
+                                                            
+                                                            
+                                                            
+                                                            let my_material = if let Some(idx) = editing_material_index {
+                                                                materials.get(idx).cloned().unwrap_or(materials[0].clone())
+                                                            } else {
+                                                                materials.first().cloned().unwrap_or(materials[0].clone())
+                                                            };
+                                                            painter.circle_filled(sim_center, 15.0, egui::Color32::from_rgba_unmultiplied(my_material.color[0], my_material.color[1], my_material.color[2], 255));
+                                                            
+                                                            let mouse_pos = response.hover_pos();
+                                                            let mut slots = rule.effect_spawn_slots.clone().unwrap_or_default();
+                                                            
+                                                            let angle_step = std::f32::consts::PI * 2.0 / 6.0;
+                                                            
+                                                            // Center circle stroke
+                                                            painter.circle_stroke(sim_center, 15.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+
+                                                            // DRAW ARROWS AND EXTRA PARTICLES
+                                                            if let Some((trigger_mat, min, max, prob)) = rule.trigger_mat_links {
+                                                                let p_center = sim_center + egui::vec2(-90.0, -90.0);
+                                                                let m_col = materials.get(trigger_mat as usize).map(|m| egui::Color32::from_rgb(m.color[0], m.color[1], m.color[2])).unwrap_or(egui::Color32::GRAY);
+                                                                painter.circle_filled(p_center, 18.0, egui::Color32::from_rgba_unmultiplied(m_col.r(), m_col.g(), m_col.b(), 255));
+                                                                painter.circle_stroke(p_center, 18.0, egui::Stroke::new(3.0, egui::Color32::WHITE));
+                                                                
+                                                                painter.text(
+                                                                    p_center + egui::vec2(25.0, 0.0),
+                                                                    egui::Align2::LEFT_CENTER,
+                                                                    format!("{}x-{}x", min, max),
+                                                                    egui::FontId::proportional(20.0),
+                                                                    egui::Color32::WHITE,
+                                                                );
+                                                                
+                                                                painter.text(
+                                                                    p_center + egui::vec2(-10.0, 35.0),
+                                                                    egui::Align2::RIGHT_CENTER,
+                                                                    format!("{:.0}%", prob * 100.0),
+                                                                    egui::FontId::proportional(20.0),
+                                                                    egui::Color32::WHITE,
+                                                                );
+                                                                
+                                                                let p1 = p_center + egui::vec2(10.0, 20.0);
+                                                                let p3 = sim_center + egui::vec2(-47.0, -22.5); 
+                                                                let p2 = sim_center + egui::vec2(-80.0, -22.5); 
+                                                                
+                                                                painter.add(egui::Shape::QuadraticBezier(egui::epaint::QuadraticBezierShape {
+                                                                    points: [p1, p2, p3],
+                                                                    closed: false,
+                                                                    fill: egui::Color32::TRANSPARENT,
+                                                                    stroke: egui::Stroke::new(3.5, egui::Color32::WHITE),
+                                                                }));
+                                                                
+                                                                let dir = (p3 - p2).normalized();
+                                                                let perp = egui::vec2(-dir.y, dir.x);
+                                                                let arrow_p1 = p3 - dir * 12.0 + perp * 6.0;
+                                                                let arrow_p2 = p3 - dir * 12.0 - perp * 6.0;
+                                                                painter.add(egui::Shape::convex_polygon(vec![p3, arrow_p1, arrow_p2], egui::Color32::WHITE, egui::Stroke::NONE));
+                                                            }
+                                                            
+                                                            if let Some(mut_mat) = rule.effect_mutate {
+                                                                let p_center = sim_center + egui::vec2(90.0, 90.0);
+                                                                let m_col = materials.get(mut_mat as usize).map(|m| egui::Color32::from_rgb(m.color[0], m.color[1], m.color[2])).unwrap_or(egui::Color32::GRAY);
+                                                                painter.circle_filled(p_center, 18.0, egui::Color32::from_rgba_unmultiplied(m_col.r(), m_col.g(), m_col.b(), 255));
+                                                                painter.circle_stroke(p_center, 18.0, egui::Stroke::new(3.0, egui::Color32::WHITE));
+                                                                
+                                                                let p1 = sim_center + egui::vec2(45.0, 22.5); 
+                                                                let p3 = p_center + egui::vec2(-10.0, -20.0);
+                                                                let p2 = sim_center + egui::vec2(80.0, 22.5); 
+                                                                
+                                                                painter.add(egui::Shape::QuadraticBezier(egui::epaint::QuadraticBezierShape {
+                                                                    points: [p1, p2, p3],
+                                                                    closed: false,
+                                                                    fill: egui::Color32::TRANSPARENT,
+                                                                    stroke: egui::Stroke::new(3.5, egui::Color32::WHITE),
+                                                                }));
+                                                                
+                                                                let dir = (p3 - p2).normalized();
+                                                                let perp = egui::vec2(-dir.y, dir.x);
+                                                                let arrow_p1 = p3 - dir * 12.0 + perp * 6.0;
+                                                                let arrow_p2 = p3 - dir * 12.0 - perp * 6.0;
+                                                                painter.add(egui::Shape::convex_polygon(vec![p3, arrow_p1, arrow_p2], egui::Color32::WHITE, egui::Stroke::NONE));
+                                                            }
+                                                            
+                                                            for slot_i in 0..6 {
+                                                                let angle = angle_step * (slot_i as f32) - std::f32::consts::FRAC_PI_2 + angle_step * 0.5;
+                                                                let dist = 45.0;
+                                                                let slot_center = sim_center + egui::vec2(angle.cos() * dist, angle.sin() * dist);
+                                                                let slot_radius = 18.0;
+                                                                
+                                                                let conn_dist = 22.5;
+                                                                let conn_center = sim_center + egui::vec2(angle.cos() * conn_dist, angle.sin() * conn_dist);
+                                                                let conn_radius = 4.0;
+                                                                let conn_rect = egui::Rect::from_center_size(conn_center, egui::vec2(24.0, 24.0));
+                                                                
+                                                                let conn_hovered = mouse_pos.map_or(false, |p| conn_rect.contains(p));
+                                                                let is_hovered = mouse_pos.map_or(false, |p| p.distance(slot_center) < slot_radius) && !conn_hovered;
+                                                                
+                                                                let existing_mat = slots.iter().find(|s| s.slot_idx == slot_i).map(|s| s.spawn_mat);
+                                                                let is_connected = slots.iter().find(|s| s.slot_idx == slot_i).map(|s| s.connected).unwrap_or(false);
+
+                                                                let mut conn_stroke = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(150));
+                                                                let mut conn_fill = egui::Color32::TRANSPARENT;
+                                                                if is_connected {
+                                                                    conn_fill = egui::Color32::WHITE;
+                                                                    conn_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
+                                                                }
+                                                                
+                                                                if conn_hovered {
+                                                                    conn_stroke.width = 2.5;
+                                                                    conn_stroke.color = egui::Color32::WHITE;
+                                                                    if response.clicked_by(egui::PointerButton::Primary) {
+                                                                        if let Some(existing_mut) = slots.iter_mut().find(|s| s.slot_idx == slot_i) {
+                                                                            existing_mut.connected = !existing_mut.connected;
+                                                                        } else {
+                                                                            slots.push(SpawnSlotConfig {
+                                                                                slot_idx: slot_i,
+                                                                                spawn_mat: editing_material_index.unwrap_or(0) as u32,
+                                                                                req_mat: None,
+                                                                                force_spawn: false,
+                                                                                connected: true,
+                                                                                replace_existing: false,
+                                                                            });
+                                                                        }
+                                                                        rule.effect_spawn_slots = Some(slots.clone());
+                                                                    }
+                                                                }
+                                                                painter.circle(conn_center, conn_radius, conn_fill, conn_stroke);
+                                                                
+                                                                if let Some(existing_mat_idx) = existing_mat {
+                                                                    let m_col = if let Some(m) = materials.get(existing_mat_idx as usize) {
+                                                                        egui::Color32::from_rgb(m.color[0], m.color[1], m.color[2])
+                                                                    } else {
+                                                                        egui::Color32::GRAY
+                                                                    };
+                                                                    let mut stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+                                                                    if is_hovered {
+                                                                        stroke.width = 4.0;
+                                                                    }
+                                                                    painter.circle_filled(slot_center, slot_radius, egui::Color32::from_rgba_unmultiplied(m_col.r(), m_col.g(), m_col.b(), 255));
+                                                                    painter.circle_stroke(slot_center, slot_radius, stroke);
+                                                                    painter.text(
+                                                                        slot_center,
+                                                                        egui::Align2::CENTER_CENTER,
+                                                                        (slot_i + 1).to_string(),
+                                                                        egui::FontId::proportional(16.0),
+                                                                        egui::Color32::from_white_alpha(200)
+                                                                    );
+                                                                    
+                                                                    if is_hovered && response.clicked_by(egui::PointerButton::Secondary) {
+                                                                        slots.retain(|s| s.slot_idx != slot_i);
+                                                                        rule.effect_spawn_slots = if slots.is_empty() { None } else { Some(slots.clone()) };
+                                                                    } else if is_hovered && response.clicked_by(egui::PointerButton::Primary) {
+                                                                        popup_target = Some((i, slot_i));
+                                                                    }
+                                                                } else {
+                                                                    
+                                                                    let mut stroke = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(100));
+                                                                    if is_hovered {
+                                                                        stroke.width = 2.5;
+                                                                        stroke.color = egui::Color32::WHITE;
+                                                                    }
+                                                                    // dashed circle
+                                                                    let dash_len = std::f32::consts::PI * 2.0 * slot_radius / 12.0 * 0.6;
+                                                                    let _gap_len = std::f32::consts::PI * 2.0 * slot_radius / 12.0 * 0.4;
+                                                                    for k in 0..12 {
+                                                                        let a1 = (k as f32) * std::f32::consts::PI * 2.0 / 12.0;
+                                                                        let a2 = a1 + (dash_len / (slot_radius * std::f32::consts::PI * 2.0)) * std::f32::consts::PI * 2.0;
+                                                                        let p1 = slot_center + egui::vec2(a1.cos() * slot_radius, a1.sin() * slot_radius);
+                                                                        let p2 = slot_center + egui::vec2(a2.cos() * slot_radius, a2.sin() * slot_radius);
+                                                                        painter.line_segment([p1, p2], stroke);
+                                                                    }
+
+                                                                    
+                                                                    if is_hovered && response.clicked_by(egui::PointerButton::Primary) {
+                                                                        popup_target = Some((i, slot_i));
+                                                                    }
+                                                                }
+                                                                
+                                                                // ==== REQ SLOTS (Large circles) & FORCE (Triangles) ====
+                                                                let req_dist = 85.0;
+                                                                let req_center = sim_center + egui::vec2(angle.cos() * req_dist, angle.sin() * req_dist);
+                                                                let req_radius = 20.0;
+                                                                let req_hovered = mouse_pos.map_or(false, |p| p.distance(req_center) < req_radius);
+                                                                
+                                                                // Triangle
+                                                                let tri_dist = 115.0;
+                                                                let tri_center = sim_center + egui::vec2(angle.cos() * tri_dist, angle.sin() * tri_dist);
+                                                                let tri_radius = 10.0;
+                                                                let tri_hovered = mouse_pos.map_or(false, |p| p.distance(tri_center) < tri_radius * 1.5);
+                                                                
+                                                                // Rhombus (replace existing toggle)
+                                                                let rhom_dist = 138.0;
+                                                                let rhom_center = sim_center + egui::vec2(angle.cos() * rhom_dist, angle.sin() * rhom_dist);
+                                                                let rhom_radius = 10.0;
+                                                                let rhom_hovered = mouse_pos.map_or(false, |p| p.distance(rhom_center) < rhom_radius * 1.5);
+                                                                
+                                                                let mut clicked_tri = false;
+                                                                let mut clicked_req_popup = false;
+                                                                let mut clicked_req_clear = false;
+                                                                let mut clicked_rhom = false;
+                                                                
+                                                                if tri_hovered && response.clicked_by(egui::PointerButton::Primary) {
+                                                                    clicked_tri = true;
+                                                                }
+                                                                if rhom_hovered && response.clicked_by(egui::PointerButton::Primary) {
+                                                                    clicked_rhom = true;
+                                                                }
+                                                                if req_hovered && response.clicked_by(egui::PointerButton::Primary) {
+                                                                    clicked_req_popup = true;
+                                                                }
+                                                                if req_hovered && response.clicked_by(egui::PointerButton::Secondary) {
+                                                                    clicked_req_clear = true;
+                                                                }
+                                                                
+                                                                if clicked_tri || clicked_req_popup || clicked_req_clear || clicked_rhom {
+                                                                    // Ensure slot exists
+                                                                    let exists = slots.iter().any(|s| s.slot_idx == slot_i);
+                                                                    if !exists {
+                                                                        slots.push(SpawnSlotConfig {
+                                                                            slot_idx: slot_i,
+                                                                            spawn_mat: editing_material_index.unwrap_or(0) as u32,
+                                                                            req_mat: None,
+                                                                            force_spawn: false,
+                                                                            connected: true,
+                                                                            replace_existing: false,
+                                                                        });
+                                                                    }
+                                                                    
+                                                                    if let Some(s) = slots.iter_mut().find(|s| s.slot_idx == slot_i) {
+                                                                        if clicked_tri { s.force_spawn = !s.force_spawn; }
+                                                                        if clicked_req_clear { s.req_mat = None; }
+                                                                        if clicked_rhom { s.replace_existing = !s.replace_existing; }
+                                                                    }
+                                                                    rule.effect_spawn_slots = Some(slots.clone());
+                                                                    
+                                                                    if clicked_req_popup {
+                                                                        popup_target_req = Some((i, slot_i));
+                                                                    }
+                                                                }
+                                                                
+                                                                let is_force = slots.iter().find(|s| s.slot_idx == slot_i).map(|s| s.force_spawn).unwrap_or(false);
+                                                                let is_replace = slots.iter().find(|s| s.slot_idx == slot_i).map(|s| s.replace_existing).unwrap_or(false);
+                                                                let req_mat_val = slots.iter().find(|s| s.slot_idx == slot_i).and_then(|s| s.req_mat);
+                                                                
+                                                                // Draw Rhombus
+                                                                let mut rhom_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255));
+                                                                let mut rhom_fill = egui::Color32::TRANSPARENT;
+                                                                if is_replace {
+                                                                    rhom_fill = egui::Color32::from_rgb(100, 200, 255);
+                                                                    rhom_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255));
+                                                                }
+                                                                if rhom_hovered {
+                                                                    rhom_stroke.width = 3.0;
+                                                                }
+                                                                let mut rhom_points = vec![
+                                                                    rhom_center + egui::vec2(rhom_radius, 0.0),
+                                                                    rhom_center + egui::vec2(0.0, rhom_radius * 0.7),
+                                                                    rhom_center + egui::vec2(-rhom_radius, 0.0),
+                                                                    rhom_center + egui::vec2(0.0, -rhom_radius * 0.7),
+                                                                ];
+                                                                for p in &mut rhom_points {
+                                                                    let x = p.x - rhom_center.x;
+                                                                    let y = p.y - rhom_center.y;
+                                                                    p.x = rhom_center.x + x * angle.cos() - y * angle.sin();
+                                                                    p.y = rhom_center.y + x * angle.sin() + y * angle.cos();
+                                                                }
+                                                                if is_replace {
+                                                                    painter.add(egui::Shape::convex_polygon(rhom_points.clone(), rhom_fill, rhom_stroke));
+                                                                } else {
+                                                                    painter.add(egui::Shape::closed_line(rhom_points.clone(), rhom_stroke));
+                                                                }
+                                                                
+                                                                // Draw Triangle
+                                                                let mut tri_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(220, 50, 50));
+                                                                let mut tri_fill = egui::Color32::TRANSPARENT;
+                                                                if is_force {
+                                                                    tri_fill = egui::Color32::from_rgb(255, 60, 60);
+                                                                    tri_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 60));
+                                                                }
+                                                                if tri_hovered {
+                                                                    tri_stroke.width = 3.0;
+                                                                }
+                                                                let mut tri_points = vec![
+                                                                    tri_center + egui::vec2(tri_radius, 0.0),
+                                                                    tri_center + egui::vec2(-tri_radius * 0.5, tri_radius * 0.866),
+                                                                    tri_center + egui::vec2(-tri_radius * 0.5, -tri_radius * 0.866),
+                                                                ];
+                                                                // Rotate triangle to point outwards (angle)
+                                                                for p in &mut tri_points {
+                                                                    let x = p.x - tri_center.x;
+                                                                    let y = p.y - tri_center.y;
+                                                                    p.x = tri_center.x + x * angle.cos() - y * angle.sin();
+                                                                    p.y = tri_center.y + x * angle.sin() + y * angle.cos();
+                                                                }
+                                                                
+                                                                if is_force {
+                                                                    painter.add(egui::Shape::convex_polygon(tri_points.clone(), tri_fill, tri_stroke));
+                                                                } else {
+                                                                    painter.add(egui::Shape::closed_line(tri_points.clone(), tri_stroke));
+                                                                }
+                                                                
+                                                                // Draw Req Circle
+                                                                if let Some(req_mat_idx) = req_mat_val {
+                                                                    let m_col = if let Some(m) = materials.get(req_mat_idx as usize) {
+                                                                        egui::Color32::from_rgb(m.color[0], m.color[1], m.color[2])
+                                                                    } else {
+                                                                        egui::Color32::GRAY
+                                                                    };
+                                                                    let mut stroke = egui::Stroke::new(2.5, egui::Color32::WHITE);
+                                                                    if req_hovered {
+                                                                        stroke.width = 4.5;
+                                                                    }
+                                                                    painter.circle_filled(req_center, req_radius, egui::Color32::from_rgba_unmultiplied(m_col.r(), m_col.g(), m_col.b(), 255));
+                                                                    painter.circle_stroke(req_center, req_radius, stroke);
+                                                                    
+                                                                    // Draw Arrow from req to spawn slot
+                                                                    let p_end = req_center - egui::vec2(angle.cos() * (req_radius + 4.0), angle.sin() * (req_radius + 4.0));
+                                                                    let p_start = slot_center + egui::vec2(angle.cos() * (slot_radius + 4.0), angle.sin() * (slot_radius + 4.0));
+                                                                    
+                                                                    painter.line_segment([p_start, p_end], egui::Stroke::new(3.0, egui::Color32::WHITE));
+                                                                    let dir = (p_end - p_start).normalized();
+                                                                    let perp = egui::vec2(-dir.y, dir.x);
+                                                                    let arrow_p1 = p_end - dir * 12.0 + perp * 6.0;
+                                                                    let arrow_p2 = p_end - dir * 12.0 - perp * 6.0;
+                                                                    painter.add(egui::Shape::convex_polygon(vec![p_end, arrow_p1, arrow_p2], egui::Color32::WHITE, egui::Stroke::NONE));
+                                                                } else {
+                                                                    let mut stroke = egui::Stroke::new(2.0, egui::Color32::from_white_alpha(100));
+                                                                    if req_hovered {
+                                                                        stroke.width = 3.5;
+                                                                        stroke.color = egui::Color32::WHITE;
+                                                                    }
+                                                                    let dash_len = std::f32::consts::PI * 2.0 * req_radius / 12.0 * 0.6;
+                                                                    for k in 0..12 {
+                                                                        let a1 = (k as f32) * std::f32::consts::PI * 2.0 / 12.0;
+                                                                        let a2 = a1 + (dash_len / (req_radius * std::f32::consts::PI * 2.0)) * std::f32::consts::PI * 2.0;
+                                                                        let p1 = req_center + egui::vec2(a1.cos() * req_radius, a1.sin() * req_radius);
+                                                                        let p2 = req_center + egui::vec2(a2.cos() * req_radius, a2.sin() * req_radius);
+                                                                        painter.line_segment([p1, p2], stroke);
+                                                                    }
+                                                                }
+}
+                                                        });
+
+                                                        columns[2].vertical(|ui| {
+                                                            ui.separator();
+                                                            ui.label(egui::RichText::new("【 触发效果 】").strong().color(egui::Color32::LIGHT_GREEN));
+                                                            
+                                                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.effect_temp_add.is_some();
+                                                                    if ui.checkbox(&mut has_val, "温度变化").changed() {
+                                                                        rule.effect_temp_add = if has_val { Some(10.0) } else { None };
+                                                                    }
+                                                                    if let Some(val) = &mut rule.effect_temp_add {
+                                                                        ui.add(egui::DragValue::new(val).speed(1.0).prefix("°C/秒: "));
+                                                                    }
+                                                                });
+
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.effect_charge_add.is_some();
+                                                                    if ui.checkbox(&mut has_val, "电能变化").changed() {
+                                                                        rule.effect_charge_add = if has_val { Some(10.0) } else { None };
+                                                                    }
+                                                                    if let Some(val) = &mut rule.effect_charge_add {
+                                                                        ui.add(egui::DragValue::new(val).speed(1.0).prefix("焦/秒: "));
+                                                                    }
+                                                                });
+                                                            });
+
+                                                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                                                ui.checkbox(&mut rule.effect_break_links, "断开所有链接");
+                                                                ui.checkbox(&mut rule.effect_delete_self, "删除自身 (消灭)");
+
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.effect_mutate.is_some();
+                                                                    if ui.checkbox(&mut has_val, "突变为其它材质").changed() {
+                                                                        rule.effect_mutate = if has_val { Some(0) } else { None };
+                                                                    }
+                                                                    if let Some(val) = &mut rule.effect_mutate {
+                                                                        let selected_name = materials.get(*val as usize).map(|m| m.name.clone()).unwrap_or_else(|| format!("ID: {}", val));
+                                                                        egui::ComboBox::from_id_source(format!("mutate_combo_{}", i))
+                                                                            .selected_text(selected_name)
+                                                                            .show_ui(ui, |ui| {
+                                                                                for (m_idx, m) in materials.iter().enumerate() {
+                                                                                    ui.selectable_value(val, m_idx as u32, &m.name);
+                                                                                }
+                                                                            });
+                                                                    }
+                                                                });
+                                                            });
+
+                                                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.effect_spawn.is_some() || rule.effect_spawn_slots.is_some();
+                                                                    if ui.checkbox(&mut has_val, "强制生成新粒子").changed() {
+                                                                        if has_val {
+                                                                            rule.effect_spawn = Some((0, 1));
+                                                                        } else {
+                                                                            rule.effect_spawn = None;
+                                                                            rule.effect_spawn_slots = None;
+                                                                        }
+                                                                    }
+                                                                    if has_val {
+                                                                        ui.label(egui::RichText::new("请在中央演示区点击空位配置").color(egui::Color32::DARK_GRAY));
+                                                                    }
+                                                                });
+
+                                                                // Emit photon
+                                                                ui.horizontal(|ui| {
+                                                                    let mut has_val = rule.effect_emit_photon.is_some();
+                                                                    if ui.checkbox(&mut has_val, "发射光子").changed() {
+                                                                        rule.effect_emit_photon = if has_val { Some(PhotonEmitParams::default()) } else { None };
+                                                                    }
+                                                                    if let Some(params) = &mut rule.effect_emit_photon {
+                                                                        ui.add(egui::DragValue::new(&mut params.count).speed(1).clamp_range(1..=100).prefix("量: "));
+                                                                        ui.add(egui::DragValue::new(&mut params.energy).speed(0.01).prefix("能: "));
+                                                                        ui.add(egui::DragValue::new(&mut params.speed).speed(0.1).prefix("速度: "));
+                                                                        ui.add(egui::DragValue::new(&mut params.lifetime).speed(0.1).prefix("存: "));
+                                                                        ui.checkbox(&mut params.force_spawn, "强制 (无视空位)");
+                                                                    }
+                                                                });
+                                                                if let Some(params) = &mut rule.effect_emit_photon {
+                                                                    ui.horizontal(|ui| {
+                                                                        ui.label("波长 (nm):");
+                                                                        if ui.button("+ 波长").clicked() {
+                                                                            params.wavelength_ranges.push((400.0, 700.0));
+                                                                        }
+                                                                    });
+                                                                    draw_spectrum_bar(ui, Some(&params.wavelength_ranges));
+                                                                    let mut to_remove = None;
+                                                                    for (w_i, w_range) in params.wavelength_ranges.iter_mut().enumerate() {
+                                                                        ui.horizontal(|ui| {
+                                                                            ui.add(egui::DragValue::new(&mut w_range.0).speed(1.0).prefix("Min: "));
+                                                                            ui.add(egui::DragValue::new(&mut w_range.1).speed(1.0).prefix("Max: "));
+                                                                            if ui.button("X").clicked() {
+                                                                                to_remove = Some(w_i);
+                                                                            }
+                                                                        });
+                                                                    }
+                                                                    if let Some(w_i) = to_remove {
+                                                                        params.wavelength_ranges.remove(w_i);
+                                                                    }
                                                                 }
                                                             });
-                                                        }
-                                                        if let Some(w_i) = to_remove {
-                                                            params.wavelength_ranges.remove(w_i);
-                                                        }
-                                                    }
+                                                        });
+                                                    });
                                                 });
                                             }
                                             if let Some(idx) = to_delete_rule {
@@ -4224,9 +4490,15 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                     m.refractive_index = Some(new_material_refractive_index);
                                                     m.heat_conduction = Some(new_material_heat_conduction);
                                                     m.specific_heat_capacity = Some(new_material_heat_capacity);
+                                                    m.surface_roughness = Some(new_material_surface_roughness);
                                                     m.group = new_material_group.clone();
                                                     m.logic_rules = new_material_logic_rules.clone();
                                                     m.reflectance_spectrum = new_material_reflectance_spectrum.clone();
+                                                    m.phase_colors = {
+                                                        let mut pc = new_material_phase_colors.clone();
+                                                        pc.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                                                        pc
+                                                    };
                                                 }
                                                 if let Ok(json) = serde_json::to_string_pretty(&materials) {
                                                     let _ = std::fs::write("materials.json", json);
@@ -4238,7 +4510,6 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                     materials.push(MaterialDef {
                                                         name: new_material_name.clone(),
                                                         group: new_material_group.clone(),
-                                                        logic_rules: new_material_logic_rules.clone(),
                                                         color: new_material_color,
                                                         color2: if new_material_is_noisy { Some(new_material_color2) } else { Some(new_material_color) },
                                                         mass: new_material_mass,
@@ -4256,7 +4527,10 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                                         refractive_index: Some(new_material_refractive_index),
                                                         heat_conduction: Some(new_material_heat_conduction),
                                                         specific_heat_capacity: Some(new_material_heat_capacity),
+                                                        surface_roughness: Some(new_material_surface_roughness),
                                                         reflectance_spectrum: new_material_reflectance_spectrum.clone(),
+                                                        logic_rules: new_material_logic_rules.clone(),
+                                                        phase_colors: new_material_phase_colors.clone(),
                                                     });
                                                     if let Ok(json) = serde_json::to_string_pretty(&materials) {
                                                         let _ = std::fs::write("materials.json", json);
@@ -4515,7 +4789,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                         egui::ScrollArea::vertical().max_height(screen_rect.height() - 250.0).show(ui, |ui| {
                                             let mut load_target = None;
                                             for item in &mut save_items {
-                                                let (rect, _response) = ui.allocate_exact_size(egui::vec2(600.0, 160.0), egui::Sense::hover());
+                                                let (rect, _response) = ui.allocate_exact_size(egui::vec2(600.0, 160.0), egui::Sense::click());
                                                 let mut is_hovered = false;
                                                 if let Some(pos) = ui.ctx().pointer_hover_pos() {
                                                     if rect.contains(pos) { is_hovered = true; }
@@ -5048,7 +5322,263 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                             }
                         }
 
+                        
+                        if popup_target_req.is_some() {
+                            let mut close_popup = false;
+                            egui::Window::new("Select Requirement Particle (需求空穴)")
+                                .collapsible(false)
+                                .resizable(false)
+                                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                                .show(&egui_context, |ui| {
+                                    ui.label(egui::RichText::new("选择作为触发条件的粒子:").size(16.0));
+                                    ui.add_space(5.0);
+                                    
+                                    if ui.button(egui::RichText::new("清空 (Clear)").color(egui::Color32::RED)).clicked() {
+                                        if let Some((rule_idx, slot_i)) = popup_target_req {
+                                            if let Some(rule) = new_material_logic_rules.get_mut(rule_idx) {
+                                                if let Some(slots) = &mut rule.effect_spawn_slots {
+                                                    if let Some(s) = slots.iter_mut().find(|s| s.slot_idx == slot_i) {
+                                                        s.req_mat = None;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        close_popup = true;
+                                    }
+                                    ui.add_space(10.0);
+                                    
+                                    egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                                        egui::Grid::new("popup_req_materials_grid").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                                            for (mat_idx, mat) in materials.iter().enumerate() {
+                                                let btn_text = egui::RichText::new(format!("{}  ", mat.name)).color(egui::Color32::from_rgb(mat.color[0], mat.color[1], mat.color[2])).size(16.0);
+                                                let btn = egui::Button::new(btn_text).min_size(egui::vec2(120.0, 30.0));
+                                                if ui.add(btn).clicked() {
+                                                    if let Some((rule_idx, slot_i)) = popup_target_req {
+                                                        if let Some(rule) = new_material_logic_rules.get_mut(rule_idx) {
+                                                            if let Some(slots) = &mut rule.effect_spawn_slots {
+                                                                if let Some(s) = slots.iter_mut().find(|s| s.slot_idx == slot_i) {
+                                                                    s.req_mat = Some(mat_idx as u32);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    close_popup = true;
+                                                }
+                                                if mat_idx % 2 == 1 {
+                                                    ui.end_row();
+                                                }
+                                            }
+                                        });
+                                    });
+                                    
+                                    ui.add_space(10.0);
+                                    if ui.button("取消 (Cancel)").clicked() {
+                                        close_popup = true;
+                                    }
+                                });
+                            if close_popup {
+                                popup_target_req = None;
+                            }
+                        }
+
+                        if popup_target.is_some() {
+                            let mut close_popup = false;
+                            egui::Window::new("选择生成粒子 (Select Particle)")
+                                .collapsible(false)
+                                .resizable(false)
+                                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                                .show(&egui_context, |ui| {
+                                    ui.label(egui::RichText::new("选择要生成的材质:").size(16.0));
+                                    ui.add_space(5.0);
+                                    
+                                    if ui.button(egui::RichText::new("清除 (Clear)").color(egui::Color32::RED)).clicked() {
+                                        if let Some((rule_idx, slot_i)) = popup_target {
+                                            if let Some(rule) = new_material_logic_rules.get_mut(rule_idx) {
+                                                if let Some(slots) = &mut rule.effect_spawn_slots {
+                                                    slots.retain(|s| s.slot_idx != slot_i);
+                                                    if slots.is_empty() {
+                                                        rule.effect_spawn_slots = None;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        close_popup = true;
+                                    }
+                                    ui.add_space(10.0);
+                                    
+                                    egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                                        egui::Grid::new("popup_materials_grid").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                                            for (mat_idx, mat) in materials.iter().enumerate() {
+                                                let btn_text = egui::RichText::new(format!("{}  ", mat.name)).color(egui::Color32::from_rgb(mat.color[0], mat.color[1], mat.color[2])).size(16.0);
+                                                let btn = egui::Button::new(btn_text).min_size(egui::vec2(120.0, 30.0));
+                                                
+                                                if ui.add(btn).clicked() {
+                                                    if let Some((rule_idx, slot_i)) = popup_target {
+                                                        if let Some(rule) = new_material_logic_rules.get_mut(rule_idx) {
+                                                            let mut slots = rule.effect_spawn_slots.clone().unwrap_or_default();
+                                                            if let Some(existing) = slots.iter_mut().find(|s| s.slot_idx == slot_i) {
+                                                                existing.spawn_mat = mat_idx as u32;
+                                                            } else {
+                                                                slots.push(SpawnSlotConfig {
+                                                                    slot_idx: slot_i,
+                                                                    spawn_mat: mat_idx as u32,
+                                                                    req_mat: None,
+                                                                    force_spawn: false,
+                                                                    connected: false,
+                                                                    replace_existing: false,
+                                                                });
+                                                            }
+                                                            rule.effect_spawn_slots = Some(slots);
+                                                        }
+                                                    }
+                                                    close_popup = true;
+                                                }
+                                                if mat_idx % 2 == 1 {
+                                                    ui.end_row();
+                                                }
+                                            }
+                                        });
+                                    });
+                                    
+                                    ui.add_space(10.0);
+                                    if ui.button("取消 (Cancel)").clicked() {
+                                        close_popup = true;
+                                    }
+                                });
+                                
+                            if close_popup {
+                                popup_target = None;
+                            }
+                        }
+
+                        // ===== 跑分信息面板（真实场景中覆盖显示） =====
+                        if bench_state == 1 || bench_state == 2 {
+                            egui::Window::new("跑分测试")
+                                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 40.0))
+                                .auto_sized()
+                                .title_bar(true)
+                                .collapsible(false)
+                                .resizable(false)
+                                .show(&egui_context, |ui| {
+                                    if bench_state == 1 {
+                                        let total_levels = presets.iter().filter(|p| p.0 <= num_particles).count().max(1);
+                                        let current_label = if bench_level < presets.len() {
+                                            presets[bench_level].1
+                                        } else { "完成" };
+                                        ui.label(format!("当前测试: {} 粒子 (级别 {}/{})", current_label, bench_level + 1, total_levels));
+
+                                        // 进度条
+                                        let elapsed = bench_start_time.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+                                        let progress = (elapsed / 10.0).clamp(0.0, 1.0);
+                                        ui.add(egui::ProgressBar::new(progress).text(format!("{:.1}s / 10s", elapsed)));
+
+                                        // 实时 FPS
+                                        let live_fps = if bench_total_dt > 0.0 {
+                                            ((bench_frame_count as f32 - 3.0).max(0.0)) / bench_total_dt
+                                        } else { 0.0 };
+                                        ui.label(format!("实时帧率: {:.1} FPS", live_fps));
+                                        ui.label(format!("活跃粒子: {}", active_particles));
+                                    } else {
+                                        // bench_state == 2 (结果) — 显示量条
+                                        if let Some(score) = bench_score {
+                                            let reference = 4_000_000u32;
+                                            let ratio = (score as f32 / reference as f32).min(1.0);
+
+                                            // 分值文字
+                                            let score_text = if score >= 1_000_000 {
+                                                format!("跑分: {}M 粒子", score / 1_000_000)
+                                            } else if score >= 1_000 {
+                                                format!("跑分: {}K 粒子", score / 1_000)
+                                            } else {
+                                                format!("跑分: {} 粒子", score)
+                                            };
+
+                                            ui.label(&score_text);
+                                            ui.add_space(4.0);
+
+                                            // 量条
+                                            let bar_w = 260.0f32;
+                                            let bar_h = 22.0f32;
+                                            let (bar_response, bar_painter) = ui.allocate_painter(
+                                                egui::vec2(bar_w, bar_h),
+                                                egui::Sense::hover(),
+                                            );
+                                            let bar_rect = bar_response.rect;
+
+                                            // 背景
+                                            bar_painter.rect_filled(bar_rect, 4.0, egui::Color32::from_rgb(40, 40, 40));
+                                            bar_painter.rect_stroke(bar_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 80)));
+
+                                            // 填充
+                                            let fill_rect = egui::Rect::from_min_size(
+                                                egui::pos2(bar_rect.min.x + 2.0, bar_rect.min.y + 2.0),
+                                                egui::vec2((bar_w - 4.0) * ratio, bar_h - 4.0),
+                                            );
+                                            let bar_color = if ratio > 0.5 {
+                                                egui::Color32::from_rgb(80, 200, 120)   // 绿
+                                            } else if ratio > 0.2 {
+                                                egui::Color32::from_rgb(220, 180, 50)   // 黄
+                                            } else {
+                                                egui::Color32::from_rgb(220, 80, 60)    // 红
+                                            };
+                                            bar_painter.rect_filled(fill_rect, 3.0, bar_color);
+
+                                            // 刻度标记（每个 preset 级别在条上画一个竖线 + 标签）
+                                            for preset in &presets {
+                                                let px = (preset.0 as f32 / reference as f32).min(1.0);
+                                                let x = bar_rect.min.x + 2.0 + (bar_w - 4.0) * px;
+                                                if x < bar_rect.max.x - 2.0 {
+                                                    bar_painter.line_segment(
+                                                        [egui::pos2(x, bar_rect.min.y), egui::pos2(x, bar_rect.max.y)],
+                                                        egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 40)),
+                                                    );
+                                                }
+                                            }
+
+                                            // 分数指示文字（条内居中）
+                                            let label = presets.iter().rev()
+                                                .find(|p| score >= p.0)
+                                                .map(|p| p.1)
+                                                .unwrap_or("< 1K");
+                                            bar_painter.text(
+                                                bar_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                label,
+                                                egui::FontId::proportional(13.0),
+                                                egui::Color32::WHITE,
+                                            );
+
+                                            ui.add_space(4.0);
+                                            ui.label(format!("平均帧率: {:.1} FPS", bench_avg_fps_at_fail));
+                                        }
+                                        ui.add_space(6.0);
+                                        ui.horizontal(|ui| {
+                                            if ui.button("重新跑分").clicked() {
+                                                bench_state = 1;
+                                                bench_level = 0;
+                                                bench_start_time = None;
+                                                bench_frame_count = 0;
+                                                bench_total_dt = 0.0;
+                                                bench_low_fps_time = 0.0;
+                                                bench_last_frame = None;
+                                                bench_particles_ready = false;
+                                                bench_score = None;
+                                                bench_last_passed_level = None;
+                                                bench_avg_fps_at_fail = 0.0;
+                                            }
+                                            if ui.button("返回 Splash").clicked() {
+                                                bench_state = 0;
+                                                splash_active = true;
+                                                splash_fade_start = None;
+                                                active_particles = 0;
+                                            }
+                                        });
+                                    }
+                                });
+                        }
+
                         let full_output = egui_context.end_frame();
+
                         let paint_jobs = egui_context
                             .tessellate(full_output.shapes, window.scale_factor() as f32);
                         let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -5063,8 +5593,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                             egui_renderer.free_texture(id);
                         }
 
-                        let surf = if let Some(s) = &surface_opt { s } else { return; };
-                            let output = match surf.get_current_texture() {
+                        let output = match surface.get_current_texture() {
                             Ok(t) => t,
                             Err(_) => return,
                         };
@@ -5111,7 +5640,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                             enc.copy_buffer_to_buffer(&particle_buf, 0, &particle_staging_buf, 0, size);
                             queue.submit(Some(enc.finish()));
                             let (tx, rx) = std::sync::mpsc::channel();
-                            particle_staging_buf.slice(..size).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
+                            particle_staging_buf.slice(..size).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
                             device.poll(wgpu::Maintain::Wait);
                             match rx.recv() {
                                 Ok(Ok(())) => {
@@ -5119,8 +5648,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                     let eps = bytemuck::cast_slice::<_, Particle>(&data).to_vec();
                                     let m_props = materials.get(current_material as usize).map_or(1.5, |m| m.conn_dist_mult);
                                     let dx = 0.0112 * m_props;
-                                    let search_r = (grab_radius * 3.0).max(5.0);
-                                    let grid = ParticleGrid::new_around(&eps, dx * 2.0, cursor_world, search_r);
+                                    let grid = ParticleGrid::new(&eps, dx * 2.0);
                                     existing_replace_state = Some((eps, grid));
                                     drop(data);
                                     particle_staging_buf.unmap();
@@ -5435,7 +5963,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                     queue.submit(Some(encoder.finish()));
                                     
                                     let (tx, rx) = std::sync::mpsc::channel();
-                                    particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
+                                    particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
                                     device.poll(wgpu::Maintain::Wait);
                                     
                                     if rx.recv().unwrap().is_ok() {
@@ -5863,8 +6391,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                             _pad_c: 0,
                             gravity_sources: gravity_sources_arr,
                             materials: {
-                                let empty_pc = PhaseColorWGSL { color: [0.0; 4], color2: [0.0; 4], min_temp: 0.0, max_temp: 0.0, flags: 0, _pad: 0.0 };
-                                let mut arr = [MaterialPropsWGSL { base_color: [0.0; 4], color2: [0.0; 4], conn_dist: 0.0, len_break: 0.0, ang_break: 0.0, melt_temp: 0.0, boil_temp: 0.0, flags: 0, surface_tension: 0.0, light_transmission: 0.0, light_reflectivity: 0.0, refractive_index: 0.0, heat_conduction: 1.0, heat_capacity: 1.0, ref_spectra: [0.0; 8], phase_colors: [empty_pc; 10], num_phase_colors: 0, _pad_phase1: 0, _pad_phase2: 0, _pad_phase3: 0 }; 64];
+                                let mut arr = [MaterialPropsWGSL { base_color: [0.0; 4], color2: [0.0; 4], conn_dist: 0.0, len_break: 0.0, ang_break: 0.0, melt_temp: 0.0, boil_temp: 0.0, flags: 0, surface_tension: 0.0, light_transmission: 0.0, light_reflectivity: 0.0, refractive_index: 0.0, heat_conduction: 1.0, heat_capacity: 1.0, ref_spectra: [[0.0; 4]; 2], phase_colors: [PhaseColorWGSL { color: [0.0; 4], color2: [0.0; 4], min_temp: 0.0, max_temp: 0.0, flags: 0, _pad: 0.0 }; 10], num_phase_colors: 0, surface_roughness: 0.0, _pad_phase2: 0, _pad_phase3: 0 }; 64];
                                 for (i, m) in materials.iter().enumerate().take(64) {
                                     let is_noisy_legacy = i == 1 || i == 4 || i == 5 || i == 7;
                                     let is_soft_legacy = i == 3 || i == 7;
@@ -5922,26 +6449,52 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                         heat_conduction: m.heat_conduction.unwrap_or(1.0),
                                         heat_capacity: m.specific_heat_capacity.unwrap_or(1.0),
                                         ref_spectra: {
-                                            let mut s = [0.0; 8];
+                                            let mut s = [[0.0; 4]; 2];
                                             if let Some(ranges) = &m.reflectance_spectrum {
                                                 if ranges.is_empty() {
-                                                    s[0] = -1.0;
-                                                    s[1] = 9999.0;
+                                                    s[0][0] = -1.0;
+                                                    s[0][1] = 9999.0;
                                                 } else {
                                                     for (idx, &(rmin, rmax)) in ranges.iter().take(4).enumerate() {
-                                                        s[idx * 2] = rmin;
-                                                        s[idx * 2 + 1] = rmax;
+                                                        s[idx / 2][(idx % 2) * 2] = rmin;
+                                                        s[idx / 2][(idx % 2) * 2 + 1] = rmax;
                                                     }
                                                 }
                                             } else {
-                                                s[0] = -1.0;
-                                                s[1] = 9999.0;
+                                                s[0][0] = -1.0;
+                                                s[0][1] = 9999.0;
                                             }
                                             s
                                         },
-                                        phase_colors: [empty_pc; 10],
-                                        num_phase_colors: 0,
-                                        _pad_phase1: 0,
+                                        phase_colors: {
+                                            let mut pcs = [PhaseColorWGSL { color: [0.0; 4], color2: [0.0; 4], min_temp: 0.0, max_temp: 0.0, flags: 0, _pad: 0.0 }; 10];
+                                            for (idx, &(min_temp, max_temp, col, col2_opt)) in m.phase_colors.iter().take(10).enumerate() {
+                                                let mut flags = 0;
+                                                let c2 = if let Some(c2_arr) = col2_opt {
+                                                    flags |= 1;
+                                                    [
+                                                        (c2_arr[0] as f32) / 255.0,
+                                                        (c2_arr[1] as f32) / 255.0,
+                                                        (c2_arr[2] as f32) / 255.0,
+                                                        (c2_arr[3] as f32) / 255.0,
+                                                    ]
+                                                } else {
+                                                    [0.0; 4]
+                                                };
+                                                
+                                                pcs[idx] = PhaseColorWGSL {
+                                                    color: [col[0] as f32 / 255.0, col[1] as f32 / 255.0, col[2] as f32 / 255.0, col[3] as f32 / 255.0],
+                                                    color2: c2,
+                                                    min_temp,
+                                                    max_temp,
+                                                    flags,
+                                                    _pad: 0.0,
+                                                };
+                                            }
+                                            pcs
+                                        },
+                                        num_phase_colors: m.phase_colors.len().min(10) as u32,
+                                        surface_roughness: m.surface_roughness.unwrap_or(0.0),
                                         _pad_phase2: 0,
                                         _pad_phase3: 0,
                                     };
@@ -5952,7 +6505,167 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                         queue.write_buffer(&sim_params_buf, 0, bytemuck::bytes_of(&sp));
                         force_reconnect = 0.0;
 
-                        // 物理演算
+                        // ===== 跑分测试逻辑（在真实场景中运行） =====
+                        if bench_state == 1 {
+                            // 跳过硬件不支持的级别
+                            while bench_level < presets.len() && presets[bench_level].0 > num_particles {
+                                bench_level += 1;
+                            }
+                            if bench_level >= presets.len() {
+                                // 所有级别都超过硬件上限，直接给最大通过分
+                                let last_preset = presets.last().unwrap().0;
+                                bench_score = Some(last_preset.min(num_particles));
+                                bench_state = 2;
+                                let _ = std::fs::write(bench_file_path, format!("{}\n{}", bench_score.unwrap(), gpu_name));
+                            } else {
+                                let test_count = presets[bench_level].0;
+
+                                // 初始化测试粒子（两个圆形对撞）
+                                if !bench_particles_ready {
+                                    let rest_dist: f32 = 0.0112 * 1.5;
+                                    let dy = rest_dist * 0.8660254;
+                                    let dx = rest_dist;
+                                    let half_count = test_count / 2;
+
+                                    let area_per_particle = dx * dy;
+                                    let circle_area = half_count as f32 * area_per_particle;
+                                    let circle_radius = (circle_area / std::f32::consts::PI).sqrt();
+
+                                    let sep = circle_radius * 2.5;
+                                    let center1 = [-sep * 0.5, 0.0f32];
+                                    let center2 = [sep * 0.5, 0.0f32];
+                                    let speed = 0.1f32;
+
+                                    let mut bench_particles: Vec<Particle> = Vec::with_capacity(test_count as usize);
+
+                                    // 生成圆1（向右运动）
+                                    let n_y = (circle_radius / dy).ceil() as i32;
+                                    let n_x = (circle_radius / (dx * 0.5)).ceil() as i32;
+                                    for iy in -n_y..=n_y {
+                                        for ix in -n_x..=n_x {
+                                            if bench_particles.len() >= half_count as usize { break; }
+                                            let offset_x = if iy.abs() % 2 != 0 { dx * 0.5 } else { 0.0 };
+                                            let px = center1[0] + (ix as f32) * dx + offset_x;
+                                            let py = center1[1] + (iy as f32) * dy;
+                                            if f32::hypot(px - center1[0], py - center1[1]) <= circle_radius {
+                                                bench_particles.push(Particle {
+                                                    pos: [px, py], vel: [speed, 0.0], links: [-1; 6],
+                                                    charge: 0.0, angle: 0.0, temperature: 0.0, mat_type: 0,
+                                                    inv_mass: 1.0, grav_scale: 1.0,
+                                                });
+                                            }
+                                        }
+                                    }
+
+                                    // 生成圆2（向左运动）
+                                    let target2 = test_count as usize;
+                                    for iy in -n_y..=n_y {
+                                        for ix in -n_x..=n_x {
+                                            if bench_particles.len() >= target2 { break; }
+                                            let offset_x = if iy.abs() % 2 != 0 { dx * 0.5 } else { 0.0 };
+                                            let px = center2[0] + (ix as f32) * dx + offset_x;
+                                            let py = center2[1] + (iy as f32) * dy;
+                                            if f32::hypot(px - center2[0], py - center2[1]) <= circle_radius {
+                                                bench_particles.push(Particle {
+                                                    pos: [px, py], vel: [-speed, 0.0], links: [-1; 6],
+                                                    charge: 0.0, angle: 0.0, temperature: 0.0, mat_type: 0,
+                                                    inv_mass: 1.0, grav_scale: 1.0,
+                                                });
+                                            }
+                                        }
+                                    }
+
+                                    let actual_count = bench_particles.len() as u32;
+
+                                    // 写入 GPU buffer
+                                    let empty = Particle {
+                                        pos: [10000.0, 10000.0], vel: [0.0, 0.0], links: [-1; 6],
+                                        charge: 0.0, angle: 0.0, temperature: 0.0, mat_type: 0,
+                                        inv_mass: 1.0, grav_scale: 1.0,
+                                    };
+                                    let mut all_particles: Vec<Particle> = vec![empty; num_particles as usize];
+                                    for (i, p) in bench_particles.iter().enumerate() {
+                                        all_particles[i] = *p;
+                                    }
+                                    queue.write_buffer(&particle_buf, 0, bytemuck::cast_slice(&all_particles));
+
+                                    // 设置场景参数 — 场景大小仅略大于粒子团实际范围
+                                    // 总跨度 = sep + 2*circle_radius = circle_radius*4.5
+                                    let total_extent = circle_radius * 4.5;
+                                    // scene_scale 是半径，取 total_extent/2 再留 20% 余量
+                                    let bench_scene_scale_val = (total_extent * 0.5 * 1.2).max(1.0);
+                                    camera.offset = [0.0, 0.0];
+                                    camera.zoom = 0.1;
+                                    camera.scene_scale = bench_scene_scale_val;
+                                    queue.write_buffer(&camera_buf, 0, bytemuck::bytes_of(&camera));
+
+                                    active_particles = actual_count;
+                                    is_paused = false;
+
+                                    bench_particles_ready = true;
+                                    bench_start_time = Some(std::time::Instant::now());
+                                    bench_last_frame = Some(std::time::Instant::now());
+                                    bench_frame_count = 0;
+                                    bench_total_dt = 0.0;
+                                    bench_low_fps_time = 0.0;
+                                }
+
+                                // 帧时间统计
+                                if let Some(last) = bench_last_frame {
+                                    let frame_dt = last.elapsed().as_secs_f32();
+                                    bench_last_frame = Some(std::time::Instant::now());
+                                    if bench_frame_count > 2 { // 跳过前几帧
+                                        bench_total_dt += frame_dt;
+                                        if frame_dt > 1.0 / 30.0 {
+                                            bench_low_fps_time += frame_dt;
+                                        }
+                                    }
+                                    bench_frame_count += 1;
+                                }
+
+                                // 检查是否满 10 秒
+                                if let Some(start) = bench_start_time {
+                                    if start.elapsed().as_secs_f32() >= 10.0 {
+                                        let avg_fps = if bench_total_dt > 0.0 {
+                                            (bench_frame_count as f32 - 3.0).max(0.0) / bench_total_dt
+                                        } else { 60.0 };
+                                        bench_avg_fps_at_fail = avg_fps;
+
+                                        if bench_low_fps_time > 1.0 {
+                                            // 该级别不合格
+                                            let fps_ratio = (avg_fps / 60.0).clamp(0.0, 1.0);
+                                            let score = (presets[bench_level].0 as f32 * fps_ratio) as u32;
+                                            bench_score = Some(score);
+                                            bench_state = 2;
+                                            let _ = std::fs::write(bench_file_path, format!("{}\n{}", score, gpu_name));
+                                        } else {
+                                            // 通过，进入下一级
+                                            bench_last_passed_level = Some(bench_level);
+                                            bench_level += 1;
+                                            bench_start_time = None;
+                                            bench_frame_count = 0;
+                                            bench_total_dt = 0.0;
+                                            bench_low_fps_time = 0.0;
+                                            bench_last_frame = None;
+                                            bench_particles_ready = false;
+
+                                            if bench_level >= presets.len() || presets[bench_level].0 > num_particles {
+                                                let final_score = if let Some(lv) = bench_last_passed_level {
+                                                    presets[lv].0
+                                                } else {
+                                                    presets[0].0
+                                                };
+                                                bench_score = Some(final_score);
+                                                bench_state = 2;
+                                                let _ = std::fs::write(bench_file_path, format!("{}\n{}", final_score, gpu_name));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+
                         let mut stats_map_requested = false;
                         if compute_mode == ComputeMode::Gpu {
                             // === GPU Compute Path ===
@@ -6149,7 +6862,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                     queue.submit(Some(encoder.finish()));
 
                     let (tx, rx) = std::sync::mpsc::channel();
-                    particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
+                    particle_staging_buf.slice(..particle_size).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
                     device.poll(wgpu::Maintain::Wait);
 
                     if matches!(rx.recv(), Ok(Ok(()))) {
@@ -6203,7 +6916,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                             queue.submit(Some(encoder.finish()));
                             
                             let (tx, rx) = std::sync::mpsc::channel();
-                            particle_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
+                            particle_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
                             
                             device.poll(wgpu::Maintain::Wait);
                             if rx.recv().unwrap().is_ok() {
@@ -6299,7 +7012,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                             queue.submit(Some(encoder.finish()));
                             
                             let (tx, rx) = std::sync::mpsc::channel();
-                            particle_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |r: Result<(), wgpu::BufferAsyncError>| tx.send(r).unwrap());
+                            particle_staging_buf.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
                             
                             device.poll(wgpu::Maintain::Wait);
                             if rx.recv().unwrap().is_ok() {
@@ -6419,8 +7132,7 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                         // ===== 逻辑引擎同步执行 =====
                         if !is_paused {
                             logic_tick_timer += dt;
-                            let has_active_logic_rules = materials.iter().any(|m| m.logic_rules.iter().any(|r| r.is_active));
-                            if logic_tick_timer >= 0.1 && !logic_mapping_active && active_particles > 0 && has_active_logic_rules {
+                            if logic_tick_timer >= 0.1 && !logic_mapping_active && active_particles > 0 {
                                 logic_tick_timer = 0.0;
                                 let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                                 let copy_size = active_particles as u64 * std::mem::size_of::<Particle>() as u64;
@@ -6521,6 +7233,36 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                                             active_particles += 1;
                                         }
                                     },
+                                    LogicEvent::SpawnSlot { mat_type, pos, parent_id, slot_idx, connected } => {
+                                        if active_particles < particle_capacity {
+                                            let inv_mass = if let Some(m) = materials.get(mat_type as usize) {
+                                                if m.mass != 0.0 { 1.0 / m.mass } else { 0.0 }
+                                            } else { 1.0 };
+                                            let mut links = [-1; 6];
+                                            if connected {
+                                                let opposite = (slot_idx + 3) % 6;
+                                                links[opposite as usize] = parent_id as i32;
+                                                
+                                                // write back to parent
+                                                let parent_link_offset = parent_id as u64 * std::mem::size_of::<Particle>() as u64 + 16 + (slot_idx as u64 * 4);
+                                                let child_id = active_particles as i32;
+                                                queue.write_buffer(&particle_buf, parent_link_offset, bytemuck::bytes_of(&child_id));
+                                            }
+                                            let p = Particle {
+                                                pos,
+                                                vel: [0.0, 0.0],
+                                                links,
+                                                charge: 0.0,
+                                                angle: 0.0,
+                                                temperature: 20.0,
+                                                mat_type,
+                                                inv_mass,
+                                                grav_scale: 1.0,
+                                            };
+                                            write_particles_to_gpu(&queue, &particle_buf, active_particles as u64, &[p]);
+                                            active_particles += 1;
+                                        }
+                                    },
                                     LogicEvent::EmitPhoton { pos, angle, params } => {
                                         for _ in 0..params.count {
                                             let speed_var = params.speed * (1.0 + (rand::random::<f32>() - 0.5) * 0.002);
@@ -6561,35 +7303,20 @@ fn run_with_event_loop(event_loop: EventLoop<()>) {
                     _ => {}
                 }
             }
-            Event::Resumed => {
-                if surface_opt.is_none() {
-                    if let Ok(surf) = _instance.create_surface(window.clone()) {
-                        let sz = window.inner_size();
-                        if sz.width > 0 && sz.height > 0 {
-                            config.width = sz.width;
-                            config.height = sz.height;
-                        } else {
-                            config.width = 1;
-                            config.height = 1;
-                        }
-                        surf.configure(&device, &config);
-                        surface_opt = Some(surf);
-                        
-                        msaa_view = create_msaa_tex(
-                            &device,
-                            config.format,
-                            config.width,
-                            config.height,
-                        );
-                        
-                        window.request_redraw();
-                    }
-                }
-            }
-            Event::Suspended => {
-                surface_opt = None;
-            }
             _ => {}
         })
         .unwrap();
 }
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+pub struct SpawnSlotConfig {
+    pub slot_idx: usize,
+    pub req_mat: Option<u32>,
+    pub spawn_mat: u32,
+    pub force_spawn: bool,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub replace_existing: bool,
+}
+
+
