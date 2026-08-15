@@ -364,19 +364,24 @@ struct LinkVertexOutput {
 
 @vertex
 fn vs_link_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> LinkVertexOutput {
+    var p = particles[iid];
     var out: LinkVertexOutput;
-    out.clip_position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    out.color = vec4<f32>(0.0);
-    out.uv = vec2<f32>(0.0);
-
-    let k = vid / 6u;
-    let neighbor_id = particles[iid].links[k];
-    if (neighbor_id == -1 || u32(neighbor_id) <= iid) {
+    
+    if ((p.mat_type & 0x40000000u) != 0u) {
+        out.clip_position = vec4<f32>(0.0);
         return out;
     }
-
-    var p = particles[iid];
+    
+    let link_idx = vid / 6u;
     let quad_vid = vid % 6u;
+    
+    let neighbor_id = p.links[link_idx];
+
+    if (neighbor_id == -1 || neighbor_id < 0 || i32(iid) >= neighbor_id || u32(neighbor_id) >= 100000000u) {
+        out.clip_position = vec4<f32>(0.0);
+        return out; 
+    }
+    
     let other = particles[neighbor_id];
     
     var radius = 0.004;

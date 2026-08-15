@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "particle_sim_5"
 version = "0.1.0"
 edition = "2021"
@@ -6,7 +6,7 @@ edition = "2021"
 [lib]
 name = "particle_sim_5"
 path = "src/main.rs"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [[bin]]
 name = "particle_sim_5_bin"

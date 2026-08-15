@@ -37,7 +37,7 @@ struct MaterialProps {
     ref_spectra: array<vec4<f32>, 2>,
     phase_colors: array<PhaseColor, 10>,
     num_phase_colors: u32,
-    _pad_phase1: u32,
+    surface_roughness: f32,
     _pad_phase2: u32,
     _pad_phase3: u32,
 }
@@ -858,19 +858,23 @@ fn compute_photon_physics(@builtin(global_invocation_id) global_id: vec3<u32>) {
                             let m = params.materials[other.mat_type & 0xFFu];
                             let pr = 0.0112 * m.conn_dist * 0.5;
 
-                            // Ray-segment vs circle intersection
+                            // Ray-segment vs circle intersection (Geometric)
                             let ray_len_sq = dot(move_vec, move_vec);
-                            var t = 0.5;
-                            if (ray_len_sq > 0.00001) {
-                                t = clamp(dot(other.pos - old_pos, move_vec) / ray_len_sq, 0.0, 1.0);
-                            }
-                            let closest = old_pos + move_vec * t;
-                            let diff = closest - other.pos;
-                            let dist_sq = dot(diff, diff);
-
-                            if (dist_sq < pr * pr && t < hit_t) {
-                                hit_t = t;
-                                hit_idx = ci;
+                            if (ray_len_sq > 0.000001) {
+                                let oc = old_pos - other.pos;
+                                let r_dir = move_vec / sqrt(ray_len_sq);
+                                let b = 2.0 * dot(oc, r_dir);
+                                let c = dot(oc, oc) - pr * pr;
+                                let discriminant = b * b - 4.0 * c;
+                                
+                                if (discriminant > 0.0) {
+                                    let t_enter = (-b - sqrt(discriminant)) / 2.0;
+                                    let t_frac = t_enter / sqrt(ray_len_sq);
+                                    if (t_frac >= 0.0 && t_frac <= 1.0 && t_frac < hit_t) {
+                                        hit_t = t_frac;
+                                        hit_idx = ci;
+                                    }
+                                }
                             }
                         }
                         ci = particle_next[ci];
@@ -888,6 +892,32 @@ fn compute_photon_physics(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 if (diff_len > 0.0001) {
                     normal = diff_to_center / diff_len;
                 }
+
+                // Snap normal to 16 directions (22.5 deg) if roughness is very low
+                // This makes hand-drawn walls of spheres act like perfect flat mirrors instead of bumpy curved surfaces
+                let roughness = m.surface_roughness;
+                if (roughness < 0.001) {
+                    let angle = atan2(normal.y, normal.x);
+                    let PI = 3.1415926535;
+                    let snapped_angle = round(angle / (PI / 8.0)) * (PI / 8.0);
+                    normal = vec2<f32>(cos(snapped_angle), sin(snapped_angle));
+                }
+                
+                // --- MACRO SURFACE ROUGHNESS ---
+                if (roughness >= 0.001) {
+                    let r1 = photon_rand(&seed);
+                    let angle = (r1 * 2.0 - 1.0) * 3.1415926535 * 0.5 * roughness;
+                    let cos_a = cos(angle);
+                    let sin_a = sin(angle);
+                    let macro_normal = vec2<f32>(
+                        normal.x * cos_a - normal.y * sin_a,
+                        normal.x * sin_a + normal.y * cos_a
+                    );
+                    if (dot(macro_normal, move_vec) < 0.0) {
+                        normal = macro_normal;
+                    }
+                }
+                // --------------------------------
 
                 // Record this hit to prevent re-interaction next substep
                 ph.last_hit_id = hit_idx;
