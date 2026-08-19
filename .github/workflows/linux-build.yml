@@ -1,0 +1,32 @@
+﻿name: Linux Build
+
+on:
+  push:
+    branches: [ "master", "main", "feature/*" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        target: x86_64-unknown-linux-gnu
+
+    - name: Build
+      run: cargo build --release
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: particle_sim_5_linux
+        path: target/release/particle_sim_5_bin
